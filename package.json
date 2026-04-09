@@ -1,0 +1,32 @@
+{
+  "name": "claude-gemini-compactor-mcp",
+  "version": "1.0.3",
+  "description": "MCP server that delegates massive file ingestion to Gemini, protecting Claude's context window.",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "claude-gemini-compactor-mcp": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "gemini",
+    "airgap",
+    "token-saver",
+    "llm",
+    "context-window",
+    "model-context-protocol"
+  ],
+  "author": "Pablo",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "@modelcontextprotocol/sdk": "^1.10.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
