@@ -53,15 +53,15 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 </div>
 
 ```
-╔══════════════════╗   "here's the path"   ╔════════════════════════╗
-║      CLAUDE      ║ ─────────────────────► ║    COMPACTOR SERVER    ║
-║                  ║                        ║    (Node.js, ~50 loc)  ║
-║  context stays   ║ ◄─────────────────────  ║    reads disk locally  ║
-║  clean · cheap   ║   distilled answer     ╚═══════════╤════════════╝
-║  ~500 tokens ✓   ║   (~500 tokens)                    │
-╚══════════════════╝                                     │ raw bytes
-                                                         │ (no Claude tokens burned)
-                                                         ▼
+╔══════════════════╗   "here's the path"    ╔════════════════════════╗
+║      CLAUDE      ║ ────────────────────►  ║   COMPACTOR SERVER     ║
+║                  ║                        ║   (Node.js, ~50 loc)   ║
+║  context stays   ║ ◄────────────────────  ║   reads disk locally   ║
+║  clean · cheap   ║   distilled answer     ╚════════════════════════╝
+║  ~500 tokens ✓   ║   (~500 tokens)                      
+╚══════════════════╝                                       │ raw bytes
+                                                           │ (no Claude tokens burned)
+                                                           ▼
                                              ╔═══════════════════════╗
                                              ║    GEMINI FLASH API   ║
                                              ║    2M-token context   ║
