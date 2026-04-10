@@ -1,4 +1,10 @@
+<div align="center">
+
+<img src="bannergit.png" alt="Claude-Gemini Compactor MCP" width="100%">
+
 # Claude-Gemini Compactor MCP
+
+<img src="logogit.png" alt="Compactor Logo" width="80">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -6,11 +12,11 @@
 [![Version](https://img.shields.io/badge/version-2.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
+</div>
+
 ---
 
 > **50 lines of Node.js. A perfect closed circuit. Your Anthropic token quota, untouched.**
-
-> **50 líneas de Node.js. Un circuito cerrado perfecto. Tu cuota de tokens de Anthropic, intacta.**
 
 ---
 
@@ -23,8 +29,6 @@ Claude loads it all into its context window — and you pay for every single tok
 Then it forgets. And loads it again on the next message.
 
 **This is the hidden tax on every developer using Claude Code at scale.**
-
-> 🇪🇸 Cada vez que Claude lee un archivo masivo, algo muere dentro de tu presupuesto de tokens. Un log de 10,000 líneas. Un dump de 500KB. Una carpeta de reportes semanales. Claude lo carga todo en su ventana de contexto — y tú pagas por cada token. Luego lo olvida. Y lo vuelve a cargar en el siguiente mensaje. **Este es el impuesto oculto que paga todo desarrollador que usa Claude Code a escala.**
 
 ---
 
@@ -40,11 +44,13 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 
 **The result: you spend ~500 Claude tokens where you used to spend 80,000.**
 
-> 🇪🇸 El Compactor es un **puente de evasión de contexto** — un servidor MCP liviano en ~50 líneas de Node.js que corre nativo y transparente en tu terminal. Le enseña a Claude una regla sagrada: **Nunca leas el archivo. Pasa la ruta. El puente se encarga del resto.** Claude pasa una ruta absoluta como string. Es todo lo que sabe. Nuestro servidor intercepta la ruta, lee los bytes crudos del disco local sin tocar jamás la memoria cognitiva de Claude, tuneliza los datos directamente hacia la API de Gemini Flash, y escribe el resultado analizado de vuelta en disco en Markdown — todo en un circuito cerrado que Claude nunca entra. **El resultado: gastas ~500 tokens de Claude donde antes gastabas 80,000.**
-
 ---
 
 ## How the Circuit Works
+
+<div align="center">
+<img src="example.png" alt="Compactor flow diagram" width="720">
+</div>
 
 ```
 ╔══════════════════╗   "here's the path"   ╔════════════════════════╗
@@ -77,8 +83,6 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 3. **Gemini processes the raw data** in its own 2M-token context. Claude's quota: untouched.
 4. **The result lands on disk** (or returns to Claude) as a clean, distilled answer.
 
-> 🇪🇸 **El circuito de 4 pasos:** Claude pasa una ruta. Node.js lee el disco localmente. Gemini procesa los datos crudos en su propio contexto de 2M tokens. El resultado llega al disco como una respuesta destilada y limpia.
-
 ---
 
 ## Our Mission
@@ -88,8 +92,6 @@ The developer ecosystem is **desperately searching** for efficient ways to deleg
 Claude reasons. Gemini ingests. The Compactor connects them.
 
 This project is proof that you don't need a complex orchestration framework to do multi-model delegation. You need **50 lines of Node.js and a clear separation of roles.**
-
-> 🇪🇸 El ecosistema de desarrolladores está desesperado por encontrar formas eficientes de delegar tareas entre modelos — para ahorrar tokens, reducir costos, y mejorar el razonamiento manteniéndolo en su carril. Claude razona. Gemini ingiere. El Compactor los conecta. Este proyecto demuestra que no necesitas un framework de orquestación complejo para hacer delegación multi-modelo. Necesitas **50 líneas de Node.js y una separación clara de roles.**
 
 ---
 
@@ -172,12 +174,12 @@ group by frequency, top 10 only" on input_file "/var/log/syslog"
 and save to "docs/errors.md".
 ```
 
-### Extract structured data from a data dump
+### Extract structured data from a large file
 
 ```
-Claude, usa ask_gemini con instruction "Extrae los 5 patrones de precio más
-competitivos con su frecuencia" sobre input_file "/home/pablo/dump_etsy.txt"
-con output_format "json".
+Claude, use ask_gemini with instruction "Extract the 5 most competitive price
+patterns with their frequency" on input_file "data/dump.txt"
+with output_format "json".
 ```
 
 ### Ingest a URL without Claude seeing the response body
