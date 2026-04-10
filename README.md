@@ -9,15 +9,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-5B4FBE?logo=anthropic)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-3.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
+[![Version](https://img.shields.io/badge/version-4.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-> **50 lines of Node.js. A perfect closed circuit. Your Anthropic token quota, untouched.**
-> **v3.0: Intelligence Routing Engine — Gemini → OpenRouter → Groq. Auto-fallback. Zero downtime.**
+> **A perfect closed circuit. Your Anthropic token quota, untouched.**
+> **v4.0: Smart Multi-Provider Router — Gemini · DeepSeek · Groq · OpenRouter · Ollama. Task-type routing. Cost tracking. 7 autonomous tools.**
 
 ---
 
@@ -63,13 +63,15 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 ╚══════════════════╝                                       │ raw bytes
                                                            │ (no Claude tokens burned)
                                                            ▼
-                                             ╔═══════════════════════╗
-                                             ║  PROVIDER CHAIN (v3)  ║
-                                             ║  1. Gemini  (2M ctx)  ║
-                                             ║  2. OpenRouter (1M)   ║
-                                             ║  3. Groq    (128K)    ║
-                                             ║  auto-retry on quota  ║
-                                             ╚═══════════════════════╝
+                                             ╔═══════════════════════════╗
+                                             ║  SMART ROUTER  (v4)       ║
+                                             ║  task_type routing        ║
+                                             ║  ingest  → Gemini first   ║
+                                             ║  fast    → Groq first     ║
+                                             ║  cheap   → DeepSeek first ║
+                                             ║  local   → Ollama first   ║
+                                             ║  auto-fallback on quota   ║
+                                             ╚═══════════════════════════╝
                                                          │
                                                          │ analyzed result
                                                          ▼
@@ -83,8 +85,8 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 
 1. **Claude passes a path string.** It never sees the file contents. Not one byte.
 2. **Node.js reads the disk locally.** Silent. No network. No Claude memory involved.
-3. **Provider chain processes the raw data** — Gemini first, then OpenRouter, then Groq on quota/rate-limit. Claude's quota: untouched.
-4. **The result lands on disk** (or returns to Claude) as a clean, distilled answer.
+3. **Smart router picks the best provider** — based on `task_type` (ingest/fast/cheap/local), then auto-falls back on quota. Claude's quota: untouched.
+4. **The result lands on disk** (or returns to Claude) as a clean, distilled answer with token counts and cost.
 
 ---
 
@@ -92,9 +94,9 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 
 The developer ecosystem is **desperately searching** for efficient ways to delegate tasks across models — to save tokens, reduce costs, and sharpen logical reasoning by keeping each model in its lane.
 
-Claude reasons. Gemini ingests. The Compactor connects them.
+Claude reasons. The Router ingests, routes, and costs. Each model stays in its lane.
 
-This project is proof that you don't need a complex orchestration framework to do multi-model delegation. You need **50 lines of Node.js and a clear separation of roles.**
+This project is proof that you don't need a complex orchestration framework to do multi-model delegation. You need **a clear AIRGAP protocol and smart task-type routing.**
 
 ---
 
@@ -118,10 +120,12 @@ This project is proof that you don't need a complex orchestration framework to d
 
 - **Node.js ≥ 18** — required for native `fetch()` and ESM support
 - **npm ≥ 9**
-- **At least one AI provider API key** (free tiers are sufficient):
-  - **Gemini** (recommended primary): [Google AI Studio](https://aistudio.google.com/) — 2M token context
-  - **OpenRouter** (free fallback): [openrouter.ai](https://openrouter.ai/) — 1M token context
-  - **Groq** (free fallback): [console.groq.com](https://console.groq.com/) — 128K context, ultra-fast
+- **At least one cloud AI provider API key** (free tiers are sufficient):
+  - **Gemini** (ingest/large-context): [Google AI Studio](https://aistudio.google.com/) — 1M token context
+  - **DeepSeek** (cheap/reason): [platform.deepseek.com](https://platform.deepseek.com/) — 64K context, $0.27/M tokens
+  - **Groq** (fast/free): [console.groq.com](https://console.groq.com/) — 128K context, ultra-fast
+  - **OpenRouter** (fallback/web): [openrouter.ai](https://openrouter.ai/) — 1M context, free tier
+  - **Ollama** (local/offline): [ollama.com](https://ollama.com/) — no API key required, always active if installed
 - **Claude Code** or any MCP-compatible client
 
 ---
@@ -144,12 +148,14 @@ Register the server in your MCP client. The server **exits immediately with a cl
 Add at least one key to your `.env`:
 
 ```env
-GEMINI_API_KEY=your_key_here        # primary (2M ctx)
-OPENROUTER_API_KEY=your_key_here    # optional fallback (1M ctx)
-GROQ_API_KEY=your_key_here          # optional fallback (128K ctx)
+GEMINI_API_KEY=your_google_ai_studio_key_here    # ingest / large-context (1M ctx)
+DEEPSEEK_API_KEY=your_deepseek_key_here          # cheap / reasoning ($0.27/M)
+GROQ_API_KEY=your_groq_key_here                  # fast / free (128K ctx)
+OPENROUTER_API_KEY=your_openrouter_key_here      # fallback / web (1M ctx)
+# OLLAMA_BASE_URL=http://localhost:11434/v1       # local — no key needed, always active
 ```
 
-The fallback chain fires automatically on quota or rate-limit errors. Only providers with a configured key are included in the chain.
+Smart routing fires automatically based on `task_type`. Fallback fires on quota or rate-limit. Only providers with a configured key (or Ollama) are included.
 
 ### Claude Code (CLI)
 
@@ -174,7 +180,7 @@ The fallback chain fires automatically on quota or rate-limit errors. Only provi
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `~/.config/claude/claude_desktop_config.json` |
 
-Restart Claude after saving. The three `ask_gemini_*` tools will appear automatically.
+Restart Claude after saving. All **7 tools** will appear automatically.
 
 > **Note:** `GEMINI_API_KEY` is loaded from `.env` by dotenv at startup. It is already in `.gitignore`. Never commit it.
 
@@ -219,13 +225,16 @@ Claude, use ask_gemini_batch with input_files ["logs/mon.log", "logs/tue.log",
 
 ### `ask_gemini` — Single file or prompt
 
+Auto-triggered for log files >100 lines, bulk data extraction, or any task where Claude would otherwise read large raw content.
+
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `instruction` | ✅ | string | What Gemini should do |
+| `instruction` | ✅ | string | What the AI should do |
 | `input_file` | ❌ | string | File path — Claude never sees the content |
 | `output_file` | ❌ | string | Path to save the result to disk |
 | `model` | ❌ | enum | `flash-lite` · `flash` · `pro` (default: `flash-lite`) |
 | `output_format` | ❌ | enum | `text` · `json` (default: `text`) |
+| `task_type` | ❌ | enum | `ingest` · `fast` · `cheap` · `reason` · `local` · `auto` (default: `auto`) |
 
 ### `ask_gemini_url` — URL ingestion
 
@@ -234,21 +243,69 @@ Fetches a URL locally via Node.js. Claude never sees the raw HTML or response bo
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `url` | ✅ | string | URL to fetch and process |
-| `instruction` | ✅ | string | What Gemini should do with the content |
+| `instruction` | ✅ | string | What the AI should do with the content |
 | `output_file` | ❌ | string | Path to save the result |
 | `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
 ### `ask_gemini_batch` — Parallel multi-file ingestion
 
-Reads all files simultaneously via `Promise.all()` and sends them in a single Gemini call.
+Reads all files simultaneously via `Promise.all()` and sends them in a single call.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `instruction` | ✅ | string | What Gemini should do with all files |
+| `instruction` | ✅ | string | What the AI should do with all files |
 | `input_files` | ✅ | string[] | Array of file paths |
 | `output_file` | ❌ | string | Path to save the combined result |
 | `model` | ❌ | enum | Default: `flash-lite` |
+| `output_format` | ❌ | enum | Default: `text` |
+| `task_type` | ❌ | enum | Default: `auto` |
+
+### `ask_gemini_diff` — Diff / patch analysis
+
+Auto-triggered when working with `.diff` or `.patch` files >100 lines, or when asked to review a git diff.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `diff_file` | ✅ | string | Path to `.diff` or `.patch` file |
+| `instruction` | ✅ | string | Analysis goal (e.g., "find breaking changes") |
+| `output_file` | ❌ | string | Path to save the analysis |
+| `model` | ❌ | enum | Default: `flash-lite` |
+| `output_format` | ❌ | enum | Default: `text` |
+
+### `ask_gemini_schema` — Schema / data model analysis
+
+Auto-triggered on `.prisma`, `.sql`, `.graphql`, or OpenAPI/Swagger files.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `schema_file` | ✅ | string | Path to schema file |
+| `instruction` | ✅ | string | Analysis goal (e.g., "find N+1 risks") |
+| `output_file` | ❌ | string | Path to save the analysis |
+| `model` | ❌ | enum | Default: `flash-lite` |
+| `output_format` | ❌ | enum | Default: `text` |
+
+### `ask_gemini_compact` — Context compaction
+
+Auto-triggered on `/compact` requests or when a file exceeds 50KB. Summarizes content to reduce context load.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `input_file` | ✅ | string | File to compact |
+| `instruction` | ❌ | string | Focus for the summary (default: concise summary) |
+| `output_file` | ❌ | string | Path to save the compacted result |
+| `model` | ❌ | enum | Default: `flash-lite` |
+
+### `ask_ollama` — Local / offline inference
+
+Auto-triggered for offline, private, or local-only requests. Requires Ollama running at `OLLAMA_BASE_URL` (default: `http://localhost:11434/v1`).
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `instruction` | ✅ | string | What the local model should do |
+| `input_file` | ❌ | string | File path to process locally |
+| `output_file` | ❌ | string | Path to save the result |
+| `model` | ❌ | enum | Default: `flash-lite` (maps to `llama3.2`) |
 | `output_format` | ❌ | enum | Default: `text` |
 
 ---
@@ -261,15 +318,15 @@ Reads all files simultaneously via `Promise.all()` and sends them in a single Ge
 | `flash` | Structured extraction, code analysis, multi-file summarization | ⚡⚡ | Low |
 | `pro` | Complex reasoning, nuanced analysis, long-form reports | ⚡ | Standard |
 
-**Default is `flash-lite`** — handles 95% of use cases on free tier.
+**Default is \****`flash-lite`** — handles 95% of use cases on free tier.
 
 Each key maps to the best available model per provider:
 
-| Key | Gemini | OpenRouter | Groq |
-| --- | --- | --- | --- |
-| `flash-lite` | `gemini-2.0-flash-lite` | `gemini-2.0-flash-exp:free` | `llama-3.3-70b-versatile` |
-| `flash` | `gemini-2.0-flash` | `gemini-2.0-flash-exp:free` | `llama-3.3-70b-versatile` |
-| `pro` | `gemini-1.5-pro` | `llama-4-maverick:free` | `llama-3.3-70b-versatile` |
+| Key | Gemini | DeepSeek | Groq | OpenRouter | Ollama |
+| --- | --- | --- | --- | --- | --- |
+| `flash-lite` | `gemini-2.0-flash-lite` | `deepseek-chat` | `llama-3.3-70b-versatile` | `gemini-2.0-flash-exp:free` | `llama3.2` |
+| `flash` | `gemini-2.0-flash` | `deepseek-chat` | `llama-3.3-70b-versatile` | `gemini-2.0-flash-exp:free` | `llama3.3` |
+| `pro` | `gemini-1.5-pro` | `deepseek-reasoner` | `llama-3.3-70b-versatile` | `llama-4-maverick:free` | `llama3.3` |
 
 ---
 
@@ -303,10 +360,13 @@ The server enforces four hard guarantees on every operation:
 ## Troubleshooting
 
 **`[FATAL] No API keys configured`**
-→ Run `cp .env.example .env` and add at least one of `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `GROQ_API_KEY`.
+→ Run `cp .env.example .env` and add at least one cloud key: `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, or `OPENROUTER_API_KEY`. Ollama alone is not sufficient.
 
 **`[WARN] Provider 'gemini' quota/rate-limit hit. Trying next provider...`**
-→ Expected behavior. The fallback chain is working. Add `OPENROUTER_API_KEY` or `GROQ_API_KEY` if not already set.
+→ Expected behavior. Smart routing is working. Add `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, or `OPENROUTER_API_KEY` for more fallback options.
+
+**`[WARN] Provider 'ollama' failed. Trying next provider...`**
+→ Ollama is not running or not reachable at `OLLAMA_BASE_URL`. Start Ollama with `ollama serve` or set `OLLAMA_BASE_URL` correctly.
 
 **`Access denied: '../../etc/passwd' is outside the working directory`**
 → Use paths relative to your project root. The path guard is working correctly.
