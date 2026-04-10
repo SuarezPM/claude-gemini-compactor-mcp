@@ -1,6 +1,6 @@
 {
   "name": "claude-gemini-compactor-mcp",
-  "version": "1.0.3",
+  "version": "2.0.0",
   "description": "MCP server that delegates massive file ingestion to Gemini, protecting Claude's context window.",
   "type": "module",
   "main": "server.js",

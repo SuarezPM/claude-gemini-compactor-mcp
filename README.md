@@ -3,6 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)
 ![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-blue.svg)
+![Version](https://img.shields.io/badge/version-2.0.0-brightgreen.svg)
 
 > **EN:** A microservice that protects Claude's context window by delegating massive file reads to Gemini 2.5 Flash-Lite — invisibly, locally, zero Claude tokens burned.
 >
@@ -136,13 +137,51 @@ Claude, use ask_gemini with instruction "Summarize all TODO comments by module"
 on input_file "src/main.js" and save results to "docs/todo_report.md".
 ```
 
-### Tool parameters / Parámetros de la herramienta
+### URL ingestion / Ingestión de URLs
+
+```
+Claude, use ask_gemini_url with url "https://example.com/api/data"
+and instruction "Extract all product prices as JSON".
+```
+
+### Batch processing / Procesamiento en lote
+
+```
+Claude, use ask_gemini_batch with input_files ["logs/mon.log", "logs/tue.log", "logs/wed.log"]
+and instruction "Summarize all ERROR entries by day" and save to "docs/weekly_errors.md".
+```
+
+### Tool reference / Referencia de herramientas
+
+#### `ask_gemini`
 
 | Parameter | Required | Description |
 | --- | --- | --- |
-| `instruction` | ✅ | What Gemini should do with the data |
-| `input_file` | ❌ | Relative or absolute path to the file to read |
-| `output_file` | ❌ | Path where Gemini's result will be saved |
+| `instruction` | ✅ | What Gemini should do |
+| `input_file` | ❌ | File path to read (Claude never sees the content) |
+| `output_file` | ❌ | Path to save the result |
+| `model` | ❌ | `flash-lite` (default) · `flash` · `pro` |
+| `output_format` | ❌ | `text` (default) · `json` |
+
+#### `ask_gemini_url`
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `url` | ✅ | URL to fetch locally |
+| `instruction` | ✅ | What Gemini should do with the content |
+| `output_file` | ❌ | Path to save the result |
+| `model` | ❌ | `flash-lite` (default) · `flash` · `pro` |
+| `output_format` | ❌ | `text` (default) · `json` |
+
+#### `ask_gemini_batch`
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `instruction` | ✅ | What Gemini should do with all files |
+| `input_files` | ✅ | Array of file paths |
+| `output_file` | ❌ | Path to save the combined result |
+| `model` | ❌ | `flash-lite` (default) · `flash` · `pro` |
+| `output_format` | ❌ | `text` (default) · `json` |
 
 ---
 
