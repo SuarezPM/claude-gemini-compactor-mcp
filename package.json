@@ -1,7 +1,7 @@
 {
   "name": "claude-gemini-compactor-mcp",
-  "version": "4.0.0",
-  "description": "MCP server: smart multi-provider AI router (Gemini · DeepSeek · Groq · OpenRouter · Ollama)",
+  "version": "6.0.0",
+  "description": "MCP server: local-first AI router (Groq · OpenRouter · Ollama/Gemma4). 8 tools: ask_ai, ask_local, ask_smart, ask_compress, ask_batch, ask_diff, ask_schema, ask_url",
   "type": "module",
   "main": "server.js",
   "bin": {
@@ -13,8 +13,6 @@
   "keywords": [
     "mcp",
     "claude",
-    "gemini",
-    "deepseek",
     "groq",
     "ollama",
     "airgap",

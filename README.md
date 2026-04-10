@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-5B4FBE?logo=anthropic)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-4.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
+[![Version](https://img.shields.io/badge/version-6.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 </div>
@@ -17,7 +17,7 @@
 ---
 
 > **A perfect closed circuit. Your Anthropic token quota, untouched.**
-> **v4.0: Smart Multi-Provider Router — Gemini · DeepSeek · Groq · OpenRouter · Ollama. Task-type routing. Cost tracking. 7 autonomous tools.**
+> **v6.0: Local-First AI Router — Gemma4/Ollama (local) · Groq · OpenRouter. 8 tools. ask_smart runs 0 cloud tokens when possible.**
 
 ---
 
@@ -64,12 +64,12 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
                                                            │ (no Claude tokens burned)
                                                            ▼
                                              ╔═══════════════════════════╗
-                                             ║  SMART ROUTER  (v4)       ║
+                                             ║  SMART ROUTER  (v6)       ║
                                              ║  task_type routing        ║
-                                             ║  ingest  → Gemini first   ║
+                                             ║  local   → Gemma4 ONLY   ║
                                              ║  fast    → Groq first     ║
-                                             ║  cheap   → DeepSeek first ║
-                                             ║  local   → Ollama first   ║
+                                             ║  ingest  → OpenRouter     ║
+                                             ║  cheap   → Ollama→Groq    ║
                                              ║  auto-fallback on quota   ║
                                              ╚═══════════════════════════╝
                                                          │
@@ -120,12 +120,10 @@ This project is proof that you don't need a complex orchestration framework to d
 
 - **Node.js ≥ 18** — required for native `fetch()` and ESM support
 - **npm ≥ 9**
-- **At least one cloud AI provider API key** (free tiers are sufficient):
-  - **Gemini** (ingest/large-context): [Google AI Studio](https://aistudio.google.com/) — 1M token context
-  - **DeepSeek** (cheap/reason): [platform.deepseek.com](https://platform.deepseek.com/) — 64K context, $0.27/M tokens
-  - **Groq** (fast/free): [console.groq.com](https://console.groq.com/) — 128K context, ultra-fast
-  - **OpenRouter** (fallback/web): [openrouter.ai](https://openrouter.ai/) — 1M context, free tier
-  - **Ollama** (local/offline): [ollama.com](https://ollama.com/) — no API key required, always active if installed
+- **At least one cloud AI provider API key** (free tiers sufficient):
+  - **Groq** (fast/free): [console.groq.com](https://console.groq.com/) — 128K ctx, ~200ms, free tier
+  - **OpenRouter** (fallback/large-context): [openrouter.ai](https://openrouter.ai/) — 1M+ ctx, free-tier models
+  - **Ollama** (local/offline): [ollama.com](https://ollama.com/) — no API key, Gemma4:e4b recommended (`ollama pull gemma4:e4b`)
 - **Claude Code** or any MCP-compatible client
 
 ---
@@ -148,11 +146,9 @@ Register the server in your MCP client. The server **exits immediately with a cl
 Add at least one key to your `.env`:
 
 ```env
-GEMINI_API_KEY=your_google_ai_studio_key_here    # ingest / large-context (1M ctx)
-DEEPSEEK_API_KEY=your_deepseek_key_here          # cheap / reasoning ($0.27/M)
 GROQ_API_KEY=your_groq_key_here                  # fast / free (128K ctx)
-OPENROUTER_API_KEY=your_openrouter_key_here      # fallback / web (1M ctx)
-# OLLAMA_BASE_URL=http://localhost:11434/v1       # local — no key needed, always active
+OPENROUTER_API_KEY=your_openrouter_key_here      # fallback / large-context (1M+ ctx)
+# OLLAMA_BASE_URL=http://localhost:11434          # local — no key needed (no /v1 suffix)
 ```
 
 Smart routing fires automatically based on `task_type`. Fallback fires on quota or rate-limit. Only providers with a configured key (or Ollama) are included.
@@ -180,26 +176,28 @@ Smart routing fires automatically based on `task_type`. Fallback fires on quota 
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `~/.config/claude/claude_desktop_config.json` |
 
-Restart Claude after saving. All **7 tools** will appear automatically.
+Restart Claude after saving. All **8 tools** will appear automatically.
 
-> **Note:** `GEMINI_API_KEY` is loaded from `.env` by dotenv at startup. It is already in `.gitignore`. Never commit it.
+> **Note:** Keys are loaded from `.env` by dotenv at startup. `.env` is in `.gitignore`. Never commit it.
 
 ---
 
 ## Usage
 
-### Analyze a massive log without burning Claude tokens
+### Local-first task (0 cloud tokens if Gemma4 handles it)
 
 ```
-Claude, use ask_gemini with instruction "Extract all CRITICAL and ERROR entries,
+Claude, use ask_smart with instruction "Extract all CRITICAL and ERROR entries,
 group by frequency, top 10 only" on input_file "/var/log/syslog"
 and save to "docs/errors.md".
 ```
 
+> `ask_smart` tries Gemma4 locally first. Escalates to Groq/OpenRouter only if local output < 80 chars.
+
 ### Extract structured data from a large file
 
 ```
-Claude, use ask_gemini with instruction "Extract the 5 most competitive price
+Claude, use ask_ai with instruction "Extract the 5 most competitive price
 patterns with their frequency" on input_file "data/dump.txt"
 with output_format "json".
 ```
@@ -207,14 +205,14 @@ with output_format "json".
 ### Ingest a URL without Claude seeing the response body
 
 ```
-Claude, use ask_gemini_url with url "https://api.example.com/data"
+Claude, use ask_url with url "https://api.example.com/data"
 and instruction "Extract all product prices as a JSON array" with output_format "json".
 ```
 
 ### Summarize a full week of logs in one call
 
 ```
-Claude, use ask_gemini_batch with input_files ["logs/mon.log", "logs/tue.log",
+Claude, use ask_batch with input_files ["logs/mon.log", "logs/tue.log",
 "logs/wed.log", "logs/thu.log", "logs/fri.log"] and instruction
 "Summarize all ERROR entries by day" and save to "docs/weekly_errors.md".
 ```
@@ -223,9 +221,13 @@ Claude, use ask_gemini_batch with input_files ["logs/mon.log", "logs/tue.log",
 
 ## Tool Reference
 
-### `ask_gemini` — Single file or prompt
+### `ask_ai` — Single file or prompt (cloud-routed)
 
-Auto-triggered for log files >100 lines, bulk data extraction, or any task where Claude would otherwise read large raw content.
+Auto-triggered for log files >100 lines, bulk data extraction, or any task where Claude would otherwise read large raw content. Routes: Groq → OpenRouter → Ollama.
+
+### `ask_smart` — Local-first pipeline (preferred)
+
+Same as `ask_ai` but tries Gemma4/Ollama first (0 cloud tokens). Escalates to cloud only if local output is too short.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |

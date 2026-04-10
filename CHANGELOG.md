@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [6.0.0] - 2026-04-10
+
+### Breaking Changes
+- **Removed providers**: Gemini (cloud) and DeepSeek — both dropped entirely
+- **Tool rename**: All `ask_gemini_*` → provider-agnostic names (see below)
+- **Clean break**: No backward-compat aliases; update any tool calls
+
+### Providers (v6.0)
+| Provider | Role | Latency |
+|----------|------|---------|
+| Ollama/Gemma4:e4b | Local-first, free, private | ~560ms warm |
+| Groq (llama-3.3-70b) | Cloud fast | ~200ms |
+| OpenRouter (openrouter/free) | Cloud fallback, 1M+ ctx | variable |
+
+### Tool Renames
+| Old | New |
+|-----|-----|
+| `ask_gemini` | `ask_ai` |
+| `ask_ollama` | `ask_local` |
+| `ask_gemini_batch` | `ask_batch` |
+| `ask_gemini_compact` | `ask_compress` |
+| `ask_gemini_diff` | `ask_diff` |
+| `ask_gemini_schema` | `ask_schema` |
+| `ask_gemini_url` | `ask_url` |
+| _(new)_ | `ask_smart` |
+
+### Features
+- **`ask_smart`**: Local-first pipeline — Gemma4 attempts task locally (0 cloud tokens); escalates to Groq/OpenRouter only if output < 80 chars
+- **`ask_compress` upgrade**: Gemma4 pre-compresses large files locally → cloud receives lean summary (~99% token savings on large files)
+- **Raw Ollama API**: Replaced OpenAI compat layer with direct `fetch()` to `/api/generate` — fixes empty-response bug (finish_reason: length)
+- **Routing table**: `local` task_type = Ollama ONLY (no cloud fallback); `cheap` = Ollama → Groq → OpenRouter
+
+### Fixes
+- Gemma4 via OpenAI compat returning empty content — fixed with raw `/api/generate` endpoint
+
+---
+
 ## [2.0.0] - 2026-04-09
 
 ### Security
