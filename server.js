@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import 'dotenv/config';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -13,6 +14,9 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB hard cap
+const MAX_URL_BODY_BYTES  = 10 * 1024 * 1024; // 10MB URL response cap
+const FETCH_TIMEOUT_MS    = 15_000;            // 15s fetch timeout
+const CWD = process.cwd();                     // cache cwd once at startup
 
 const MODEL_MAP = {
   'flash-lite': 'gemini-2.5-flash-lite',
@@ -28,12 +32,32 @@ const server = new Server(
 
 // P0: Secure path validation — fixes startsWith() bypass bug
 function validatePath(filePath) {
-  const resolved = path.resolve(process.cwd(), filePath);
-  const relative = path.relative(process.cwd(), resolved);
+  const resolved = path.resolve(CWD, filePath);
+  const relative = path.relative(CWD, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Access denied: '${filePath}' is outside the working directory.`);
   }
   return resolved;
+}
+
+// P0: SSRF guard — blocks file://, private IPs, and internal hosts
+function validateUrl(urlString) {
+  let parsed;
+  try { parsed = new URL(urlString); } catch { throw new Error(`Invalid URL: ${urlString}`); }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Blocked URL scheme '${parsed.protocol}'. Only http/https allowed.`);
+  }
+  const h = parsed.hostname.toLowerCase();
+  if (
+    h === 'localhost' || h === '0.0.0.0' ||
+    /^127\./.test(h) || /^10\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    h.endsWith('.local') || h.endsWith('.internal')
+  ) {
+    throw new Error(`Blocked private/internal host: ${h}`);
+  }
+  return urlString;
 }
 
 // P0: Async read with 50MB size guard — prevents OOM on huge files
@@ -66,6 +90,7 @@ async function writeOutput(text, outputFile, usage, context) {
   const tokenInfo = usage?.totalTokenCount ? ` [Tokens used: ${usage.totalTokenCount}]` : '';
   if (outputFile) {
     const outPath = validatePath(outputFile);
+    await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
     await fs.promises.writeFile(outPath, text, 'utf8');
     return { content: [{ type: "text", text: `SUCCESS: ${context} Result saved to ${outputFile}.${tokenInfo}` }] };
   }
@@ -144,9 +169,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "ask_gemini_url") {
       const { url, instruction, output_file, model = 'flash-lite', output_format = 'text' } = args;
 
-      const response = await fetch(url);
+      validateUrl(url);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      let response;
+      try {
+        response = await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (!response.ok) throw new Error(`HTTP ${response.status} fetching: ${url}`);
+
+      const contentLength = response.headers.get('content-length');
+      if (contentLength && parseInt(contentLength) > MAX_URL_BODY_BYTES) {
+        throw new Error(`URL response too large: ${(parseInt(contentLength)/1024/1024).toFixed(1)}MB exceeds 10MB limit.`);
+      }
       const body = await response.text();
+      if (Buffer.byteLength(body) > MAX_URL_BODY_BYTES) {
+        throw new Error(`URL response body exceeds 10MB limit.`);
+      }
 
       const prompt = `${instruction}\n\n--- URL: ${url} ---\n${body}`;
       const { text, usage } = await callGemini(prompt, model, output_format);
