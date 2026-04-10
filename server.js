@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -33,6 +34,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Si Claude proporciona un archivo, Node.js lo lee. Claude no gasta tokens.
       if (input_file) {
         const inputPath = path.resolve(process.cwd(), input_file);
+        if (!inputPath.startsWith(process.cwd())) {
+          throw new Error(`Access denied: '${input_file}' is outside the working directory.`);
+        }
         const fileContent = fs.readFileSync(inputPath, 'utf8');
         finalPrompt = `${instruction}\n\n--- ARCHIVO ADJUNTO ---\n${fileContent}`;
       }
