@@ -15,7 +15,7 @@ const CWD = process.cwd();                     // cache cwd once at startup
 
 // --- Provider model maps ---
 const MODELS = {
-  gemini:     { 'flash-lite': 'gemini-2.5-flash-lite', 'flash': 'gemini-2.0-flash', 'pro': 'gemini-1.5-pro' },
+  gemini:     { 'flash-lite': 'gemini-2.0-flash-lite', 'flash': 'gemini-2.0-flash', 'pro': 'gemini-1.5-pro' },
   openrouter: { 'flash-lite': 'google/gemini-2.0-flash-exp:free', 'flash': 'google/gemini-2.0-flash-exp:free', 'pro': 'meta-llama/llama-4-maverick:free' },
   groq:       { 'flash-lite': 'llama-3.3-70b-versatile', 'flash': 'llama-3.3-70b-versatile', 'pro': 'llama-3.3-70b-versatile' },
 };
@@ -58,6 +58,7 @@ const server = new Server(
 
 // P0: Secure path validation — fixes startsWith() bypass bug
 function validatePath(filePath) {
+  if (!filePath) throw new Error('File path must not be empty.');
   const resolved = path.resolve(CWD, filePath);
   const relative = path.relative(CWD, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -240,19 +241,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      let response;
+      let response, body;
       try {
         response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status} fetching: ${url}`);
+        const contentLength = response.headers.get('content-length');
+        if (contentLength && parseInt(contentLength) > MAX_URL_BODY_BYTES) {
+          throw new Error(`URL response too large: ${(parseInt(contentLength)/1024/1024).toFixed(1)}MB exceeds 10MB limit.`);
+        }
+        body = await response.text(); // timeout still active — covers slow body streams
       } finally {
         clearTimeout(timeoutId);
       }
-      if (!response.ok) throw new Error(`HTTP ${response.status} fetching: ${url}`);
-
-      const contentLength = response.headers.get('content-length');
-      if (contentLength && parseInt(contentLength) > MAX_URL_BODY_BYTES) {
-        throw new Error(`URL response too large: ${(parseInt(contentLength)/1024/1024).toFixed(1)}MB exceeds 10MB limit.`);
-      }
-      const body = await response.text();
       if (Buffer.byteLength(body) > MAX_URL_BODY_BYTES) {
         throw new Error(`URL response body exceeds 10MB limit.`);
       }

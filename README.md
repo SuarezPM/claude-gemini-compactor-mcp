@@ -261,13 +261,13 @@ Reads all files simultaneously via `Promise.all()` and sends them in a single Ge
 | `flash` | Structured extraction, code analysis, multi-file summarization | ⚡⚡ | Low |
 | `pro` | Complex reasoning, nuanced analysis, long-form reports | ⚡ | Standard |
 
-**Default is ****`flash-lite`** — handles 95% of use cases on free tier.
+**Default is `flash-lite`** — handles 95% of use cases on free tier.
 
 Each key maps to the best available model per provider:
 
 | Key | Gemini | OpenRouter | Groq |
 | --- | --- | --- | --- |
-| `flash-lite` | `gemini-2.5-flash-lite` | `gemini-2.0-flash-exp:free` | `llama-3.3-70b-versatile` |
+| `flash-lite` | `gemini-2.0-flash-lite` | `gemini-2.0-flash-exp:free` | `llama-3.3-70b-versatile` |
 | `flash` | `gemini-2.0-flash` | `gemini-2.0-flash-exp:free` | `llama-3.3-70b-versatile` |
 | `pro` | `gemini-1.5-pro` | `llama-4-maverick:free` | `llama-3.3-70b-versatile` |
 
