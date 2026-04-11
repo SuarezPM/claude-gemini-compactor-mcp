@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-5B4FBE?logo=anthropic)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-6.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
+[![Version](https://img.shields.io/badge/version-7.0.0-brightgreen.svg)](https://github.com/SuarezPM/claude-gemini-compactor-mcp/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 </div>
@@ -17,7 +17,7 @@
 ---
 
 > **A perfect closed circuit. Your Anthropic token quota, untouched.**
-> **v6.0: Local-First AI Router — Gemma4/Ollama (local) · Groq · OpenRouter. 8 tools. ask\_smart runs 0 cloud tokens when possible.**
+> **v7.0: Local-First Pipeline — Gemma4/Ollama (0 cloud tokens) → Groq fallback. 8 tools. ask\_smart runs free when Ollama handles it.**
 
 ---
 
@@ -37,13 +37,13 @@ Then it forgets. And loads it again on the next message.
 
 The Compactor is **not** a wrapper. It is not a prompt trick. It is not a workaround.
 
-It is a **context bypass bridge** — a lightweight MCP server written in ~50 lines of Node.js that runs natively and transparently in your OS terminal. It teaches Claude one sacred rule:
+It is a **context bypass bridge** — a lightweight MCP server written in ~280 lines of Node.js that runs natively and transparently in your OS terminal. It teaches Claude one sacred rule:
 
 > **Never read the file. Pass the path. Let the bridge handle the rest.**
 
-Claude passes an absolute file path as a string. That is all it knows. Our Node.js server intercepts the path, reads the raw bytes from your local disk without ever touching Claude's cognitive memory, tunnels the data directly into the Gemini Flash API, and writes the analyzed result back to disk in Markdown — all in a closed circuit Claude never enters.
+Claude passes an absolute file path as a string. That is all it knows. Our Node.js server intercepts the path, reads the raw bytes from your local disk without ever touching Claude's cognitive memory, tunnels the data into Gemma4 (local, free) or Groq (cloud, fast), and writes the analyzed result back to disk in Markdown — all in a closed circuit Claude never enters.
 
-**The result: you spend \~500 Claude tokens where you used to spend 80,000.**
+**The result: you spend ~500 Claude tokens where you used to spend 80,000.**
 
 ---
 
@@ -56,7 +56,7 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 ```
 ╔══════════════════╗   "here's the path"    ╔════════════════════════╗
 ║      CLAUDE      ║ ────────────────────►  ║   COMPACTOR SERVER     ║
-║                  ║                        ║   (Node.js, ~200 loc)  ║
+║                  ║                        ║   (Node.js, ~280 loc)  ║
 ║  context stays   ║ ◄────────────────────  ║   reads disk locally   ║
 ║  clean · cheap   ║   distilled answer     ╚════════════════════════╝
 ║  ~500 tokens ✓   ║   (~500 tokens)
@@ -64,13 +64,12 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
                                                            │ (no Claude tokens burned)
                                                            ▼
                                              ╔═══════════════════════════╗
-                                             ║  SMART ROUTER  (v6)       ║
-                                             ║  task_type routing        ║
-                                             ║  local   → Gemma4 ONLY   ║
-                                             ║  fast    → Groq first     ║
-                                             ║  ingest  → OpenRouter     ║
-                                             ║  cheap   → Ollama→Groq    ║
-                                             ║  auto-fallback on quota   ║
+                                             ║  SMART ROUTER  (v7)       ║
+                                             ║  local  → Gemma4/Ollama   ║
+                                             ║           (0 cloud tokens) ║
+                                             ║  cloud  → Groq only        ║
+                                             ║  auto   → Ollama first,    ║
+                                             ║           Groq if needed   ║
                                              ╚═══════════════════════════╝
                                                          │
                                                          │ analyzed result
@@ -85,8 +84,8 @@ Claude passes an absolute file path as a string. That is all it knows. Our Node.
 
 1. **Claude passes a path string.** It never sees the file contents. Not one byte.
 2. **Node.js reads the disk locally.** Silent. No network. No Claude memory involved.
-3. **Smart router picks the best provider** — based on `task_type` (ingest/fast/cheap/local), then auto-falls back on quota. Claude's quota: untouched.
-4. **The result lands on disk** (or returns to Claude) as a clean, distilled answer with token counts and cost.
+3. **Smart router picks the provider** — Ollama/Gemma4 first (0 cloud tokens), escalates to Groq only when local output is insufficient.
+4. **The result lands on disk** (or returns to Claude) as a clean, distilled answer with token counts and provider used.
 
 ---
 
@@ -96,7 +95,7 @@ The developer ecosystem is **desperately searching** for efficient ways to deleg
 
 Claude reasons. The Router ingests, routes, and costs. Each model stays in its lane.
 
-This project is proof that you don't need a complex orchestration framework to do multi-model delegation. You need **a clear AIRGAP protocol and smart task-type routing.**
+This project is proof that you don't need a complex orchestration framework to do multi-model delegation. You need **a clear AIRGAP protocol and a local-first pipeline.**
 
 ---
 
@@ -107,7 +106,7 @@ This project is proof that you don't need a complex orchestration framework to d
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Tool Reference](#tool-reference)
-- [Model Selection Guide](#model-selection-guide)
+- [Provider Architecture](#provider-architecture)
 - [Security](#security)
 - [Token Savings](#token-savings)
 - [Troubleshooting](#troubleshooting)
@@ -120,10 +119,9 @@ This project is proof that you don't need a complex orchestration framework to d
 
 - **Node.js ≥ 18** — required for native `fetch()` and ESM support
 - **npm ≥ 9**
-- **At least one cloud AI provider API key** (free tiers sufficient):
-  - **Groq** (fast/free): [console.groq.com](https://console.groq.com/) — 128K ctx, ~200ms, free tier
-  - **OpenRouter** (fallback/large-context): [openrouter.ai](https://openrouter.ai/) — 1M+ ctx, free-tier models
-  - **Ollama** (local/offline): [ollama.com](https://ollama.com/) — no API key, Gemma4:e4b recommended (`ollama pull gemma4:e4b`)
+- **Groq API key** (required): [console.groq.com](https://console.groq.com/) — 128K ctx, ~200ms, free tier
+- **Ollama** (optional, recommended): [ollama.com](https://ollama.com/) — local inference, 0 cloud tokens
+  - Pull the model: `ollama pull gemma4:e4b`
 - **Claude Code** or any MCP-compatible client
 
 ---
@@ -134,24 +132,22 @@ This project is proof that you don't need a complex orchestration framework to d
 git clone https://github.com/SuarezPM/claude-gemini-compactor-mcp.git
 cd claude-gemini-compactor-mcp
 npm install
-cp .env.example .env   # then add your API key(s)
+cp .env.example .env   # then add your GROQ_API_KEY
 ```
 
 ---
 
 ## Configuration
 
-Register the server in your MCP client. The server **exits immediately with a clear message** if no API keys are configured — no silent failures.
+Register the server in your MCP client. The server **exits immediately with a clear message** if `GROQ_API_KEY` is not set — no silent failures.
 
-Add at least one key to your `.env`:
+Add to your `.env`:
 
 ```env
-GROQ_API_KEY=your_groq_key_here                  # fast / free (128K ctx)
-OPENROUTER_API_KEY=your_openrouter_key_here      # fallback / large-context (1M+ ctx)
-# OLLAMA_BASE_URL=http://localhost:11434          # local — no key needed (no /v1 suffix)
+GROQ_API_KEY=your_groq_key_here          # required — cloud fallback
+# OLLAMA_BASE_URL=http://localhost:11434  # optional — local inference (no /v1 suffix)
+# OLLAMA_MODEL=gemma4:e4b                 # optional — default: gemma4:e4b
 ```
-
-Smart routing fires automatically based on `task_type`. Fallback fires on quota or rate-limit. Only providers with a configured key (or Ollama) are included.
 
 ### Claude Code (CLI)
 
@@ -192,12 +188,12 @@ group by frequency, top 10 only" on input_file "/var/log/syslog"
 and save to "docs/errors.md".
 ```
 
-> `ask_smart` tries Gemma4 locally first. Escalates to Groq/OpenRouter only if local output < 80 chars.
+> `ask_smart` tries Gemma4 locally first. Escalates to Groq only if local output < 80 chars.
 
-### Extract structured data from a large file
+### Force cloud processing
 
 ```
-Claude, use ask_ai with instruction "Extract the 5 most competitive price
+Claude, use ask_ai with task_type "cloud" and instruction "Extract the 5 most competitive price
 patterns with their frequency" on input_file "data/dump.txt"
 with output_format "json".
 ```
@@ -221,22 +217,39 @@ Claude, use ask_batch with input_files ["logs/mon.log", "logs/tue.log",
 
 ## Tool Reference
 
-### `ask_ai` — Single file or prompt (cloud-routed)
+### `ask_ai` — Single file or prompt
 
-Auto-triggered for log files >100 lines, bulk data extraction, or any task where Claude would otherwise read large raw content. Routes: Groq → OpenRouter → Ollama.
-
-### `ask_smart` — Local-first pipeline (preferred)
-
-Same as `ask_ai` but tries Gemma4/Ollama first (0 cloud tokens). Escalates to cloud only if local output is too short.
+Routes to local or cloud based on `task_type`. Auto-triggered for log files >100 lines, bulk data extraction, or any task where Claude would otherwise read large raw content.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `instruction` | ✅ | string | What the AI should do |
 | `input_file` | ❌ | string | File path — Claude never sees the content |
 | `output_file` | ❌ | string | Path to save the result to disk |
-| `model` | ❌ | enum | `flash-lite` · `flash` · `pro` (default: `flash-lite`) |
 | `output_format` | ❌ | enum | `text` · `json` (default: `text`) |
-| `task_type` | ❌ | enum | `ingest` · `fast` · `cheap` · `reason` · `local` · `auto` (default: `auto`) |
+| `task_type` | ❌ | enum | `local` · `cloud` · `auto` (default: `auto`) |
+
+### `ask_local` — Local / offline inference only
+
+Runs exclusively on Ollama/Gemma4. Zero cloud tokens. Requires Ollama running locally.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `instruction` | ✅ | string | What the local model should do |
+| `input_file` | ❌ | string | File path to process locally |
+| `output_file` | ❌ | string | Path to save the result |
+| `output_format` | ❌ | enum | Default: `text` |
+
+### `ask_smart` — Local-first pipeline (preferred)
+
+Tries Gemma4/Ollama first (0 cloud tokens). Escalates to Groq only if local output < 80 chars or Ollama is unavailable.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `instruction` | ✅ | string | What the AI should do |
+| `input_file` | ❌ | string | File path — Claude never sees the content |
+| `output_file` | ❌ | string | Path to save the result to disk |
+| `output_format` | ❌ | enum | `text` · `json` (default: `text`) |
 
 ### `ask_url` — URL ingestion
 
@@ -247,7 +260,6 @@ Fetches a URL locally via Node.js. Claude never sees the raw HTML or response bo
 | `url` | ✅ | string | URL to fetch and process |
 | `instruction` | ✅ | string | What the AI should do with the content |
 | `output_file` | ❌ | string | Path to save the result |
-| `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
 ### `ask_batch` — Parallel multi-file ingestion
@@ -259,9 +271,8 @@ Reads all files simultaneously via `Promise.all()` and sends them in a single ca
 | `instruction` | ✅ | string | What the AI should do with all files |
 | `input_files` | ✅ | string[] | Array of file paths |
 | `output_file` | ❌ | string | Path to save the combined result |
-| `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
-| `task_type` | ❌ | enum | Default: `auto` |
+| `task_type` | ❌ | enum | `local` · `cloud` · `auto` (default: `auto`) |
 
 ### `ask_diff` — Diff / patch analysis
 
@@ -272,7 +283,6 @@ Auto-triggered when working with `.diff` or `.patch` files >100 lines, or when a
 | `diff_file` | ✅ | string | Path to `.diff` or `.patch` file |
 | `instruction` | ✅ | string | Analysis goal (e.g., "find breaking changes") |
 | `output_file` | ❌ | string | Path to save the analysis |
-| `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
 ### `ask_schema` — Schema / data model analysis
@@ -284,51 +294,38 @@ Auto-triggered on `.prisma`, `.sql`, `.graphql`, or OpenAPI/Swagger files.
 | `schema_file` | ✅ | string | Path to schema file |
 | `instruction` | ✅ | string | Analysis goal (e.g., "find N+1 risks") |
 | `output_file` | ❌ | string | Path to save the analysis |
-| `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
 ### `ask_compress` — Context compaction
 
-Auto-triggered on `/compact` requests or when a file exceeds 50KB. Summarizes content to reduce context load.
+Two-stage: Gemma4 (local) pre-compresses, Groq finalizes. Auto-triggered on `/compact` requests or when a file exceeds 50KB.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `input_file` | ✅ | string | File to compact |
 | `instruction` | ❌ | string | Focus for the summary (default: concise summary) |
 | `output_file` | ❌ | string | Path to save the compacted result |
-| `model` | ❌ | enum | Default: `flash-lite` |
-
-### `ask_local` — Local / offline inference
-
-Auto-triggered for offline, private, or local-only requests. Requires Ollama running at `OLLAMA_BASE_URL` (default: `http://localhost:11434/v1`).
-
-| Parameter | Required | Type | Description |
-| --- | --- | --- | --- |
-| `instruction` | ✅ | string | What the local model should do |
-| `input_file` | ❌ | string | File path to process locally |
-| `output_file` | ❌ | string | Path to save the result |
-| `model` | ❌ | enum | Default: `flash-lite` (maps to `llama3.2`) |
-| `output_format` | ❌ | enum | Default: `text` |
 
 ---
 
-## Model Selection Guide
+## Provider Architecture
 
-| Key | Best for | Speed | Cost |
+v7.0 uses exactly two providers. No registration table. No model tiers.
+
+| Provider | Model | Cost | When used |
 | --- | --- | --- | --- |
-| `flash-lite` | Bulk log parsing, large data extraction, high-volume batch jobs | ⚡⚡⚡ | Free tier |
-| `flash` | Structured extraction, code analysis, multi-file summarization | ⚡⚡ | Low |
-| `pro` | Complex reasoning, nuanced analysis, long-form reports | ⚡ | Standard |
+| **Ollama** (local) | `gemma4:e4b` | Free — 0 cloud tokens | `task_type: local` or first attempt in `auto` |
+| **Groq** (cloud) | `llama-3.3-70b-versatile` | Free tier (rate-limited) | `task_type: cloud`, or `auto` escalation when Ollama output < 80 chars |
 
-**Default is \****`flash-lite`** — handles 95% of use cases on free tier.
+**`ask_smart` / `auto` pipeline:**
 
-Each key maps to the best available model per provider:
+```
+Ollama/Gemma4 → output ≥ 80 chars? → done (0 cloud tokens)
+                output < 80 chars?  → escalate to Groq
+                Ollama unavailable? → escalate to Groq
+```
 
-| Key | Gemini | DeepSeek | Groq | OpenRouter | Ollama |
-| --- | --- | --- | --- | --- | --- |
-| `flash-lite` | `gemini-2.0-flash-lite` | `deepseek-chat` | `llama-3.3-70b-versatile` | `gemini-2.0-flash-exp:free` | `llama3.2` |
-| `flash` | `gemini-2.0-flash` | `deepseek-chat` | `llama-3.3-70b-versatile` | `gemini-2.0-flash-exp:free` | `llama3.3` |
-| `pro` | `gemini-1.5-pro` | `deepseek-reasoner` | `llama-3.3-70b-versatile` | `llama-4-maverick:free` | `llama3.3` |
+`ask_compress` always uses both: Gemma4 pre-compresses locally, Groq finalizes.
 
 ---
 
@@ -336,13 +333,13 @@ Each key maps to the best available model per provider:
 
 The server enforces four hard guarantees on every operation:
 
-**1. Path traversal protection** — `path.relative()` validation blocks `../../etc/passwd`-style attacks before any disk read occurs. The naive `startsWith(cwd)` check it replaced was bypassable.
+**1. Path traversal protection** — `path.relative()` validation blocks `../../etc/passwd`-style attacks before any disk read occurs.
 
 **2. 50MB file size cap** — files exceeding 50MB are rejected before being read into memory, preventing OOM crashes on unexpectedly large inputs.
 
 **3. SSRF guard** — `ask_url` blocks `file://`, private IPs (10.x, 172.16–31.x, 192.168.x), localhost, and `.local`/`.internal` hostnames.
 
-**4. Fail-fast provider validation** — the server exits at startup with `[FATAL] No API keys configured` if no keys are present. No silent runtime failures mid-task.
+**4. Fail-fast key validation** — the server exits at startup with `[FATAL] GROQ_API_KEY not set` if the required key is missing. No silent runtime failures mid-task.
 
 ---
 
@@ -352,23 +349,23 @@ The server enforces four hard guarantees on every operation:
 | --- | --- | --- | --- |
 | 10K-line log analysis | ~80,000 Claude tokens | ~500 Claude tokens | **99.4%** |
 | 500KB data dump | Context overflow | ~800 Claude tokens | ∞ |
-| 5-file batch audit | 5× full file reads | ~1,200 Claude tokens | **\~98%** |
+| 5-file batch audit | 5× full file reads | ~1,200 Claude tokens | **~98%** |
 | URL ingestion (50KB page) | ~40,000 Claude tokens | ~600 Claude tokens | **98.5%** |
 
-*Claude token estimates at \~4 chars/token. Gemini usage billed separately to your Google AI account.*
+*Claude token estimates at ~4 chars/token. Groq usage billed to your Groq account (free tier available).*
 
 ---
 
 ## Troubleshooting
 
-**`[FATAL] No API keys configured`**
-→ Run `cp .env.example .env` and add at least one cloud key: `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, or `OPENROUTER_API_KEY`. Ollama alone is not sufficient.
+**`[FATAL] GROQ_API_KEY not set`**
+→ Add `GROQ_API_KEY=your_key` to your `.env` file and restart.
 
-**`[WARN] Provider 'gemini' quota/rate-limit hit. Trying next provider...`**
-→ Expected behavior. Smart routing is working. Add `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, or `OPENROUTER_API_KEY` for more fallback options.
+**`[WARN] Ollama failed or output too short, escalating to Groq`**
+→ Expected behavior when Ollama is unavailable or returns an insufficient response. Groq handled the request.
 
-**`[WARN] Provider 'ollama' failed. Trying next provider...`**
-→ Ollama is not running or not reachable at `OLLAMA_BASE_URL`. Start Ollama with `ollama serve` or set `OLLAMA_BASE_URL` correctly.
+**`[WARN] Ollama unavailable`**
+→ Ollama is not running or not reachable at `OLLAMA_BASE_URL`. Start with `ollama serve` or verify the URL.
 
 **`Access denied: '../../etc/passwd' is outside the working directory`**
 → Use paths relative to your project root. The path guard is working correctly.
@@ -379,7 +376,7 @@ The server enforces four hard guarantees on every operation:
 **Tool does not appear in Claude after config change**
 → Restart Claude completely. MCP servers are loaded at startup, not hot-reloaded.
 
-**`HTTP 403 fetching: https://...`**** on ask\_url**
+**`HTTP 403 fetching: https://...` on ask_url**
 → The target server is blocking automated requests. Check if authentication is required.
 
 ---
@@ -391,7 +388,7 @@ The server enforces four hard guarantees on every operation:
 3. Commit following [Conventional Commits](https://www.conventionalcommits.org/)
 4. Open a Pull Request against `master`
 
-New tools should follow the `ask_*` naming pattern and use the shared `callWithFallback()` and `writeOutput()` helpers. Keep `server.js` focused on the AIRGAP Protocol — no bloat.
+New tools should follow the `ask_*` naming pattern and use the shared `callSmart()` and `writeOutput()` helpers. Keep `server.js` focused on the AIRGAP Protocol — no bloat.
 
 ---
 

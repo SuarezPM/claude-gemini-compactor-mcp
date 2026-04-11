@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// v7.0 — Two providers only: Ollama/Gemma4 (local, free) + Groq (cloud).
+// AIRGAP protocol: Claude passes paths, Node reads disk, AI processes content.
+// Local-first: Ollama always tried first. Cloud only when local insufficient.
 import 'dotenv/config';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -7,538 +10,376 @@ import OpenAI from "openai";
 import fs from 'fs';
 import path from 'path';
 
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB hard cap
-const MAX_URL_BODY_BYTES  = 10 * 1024 * 1024; // 10MB URL response cap
-const FETCH_TIMEOUT_MS    = 15_000;            // 15s fetch timeout
-const OLLAMA_TIMEOUT_MS   = 30_000;            // 30s for local inference
-const LOCAL_MIN_LENGTH    = 80;                // ask_smart: escalate if local output < N chars
-const CWD = process.cwd();
+// ── Constants ────────────────────────────────────────────────────────────────
+const MAX_FILE_BYTES  = 50 * 1024 * 1024;   // 50MB hard cap
+const MAX_URL_BYTES   = 10 * 1024 * 1024;   // 10MB URL response cap
+const FETCH_TIMEOUT   = 15_000;             // 15s
+const OLLAMA_TIMEOUT  = 30_000;             // 30s for local inference
+const LOCAL_MIN_LEN   = 80;                 // chars; escalate if shorter
+const CWD             = process.cwd();
 
-// ── Provider Registry ────────────────────────────────────────────────────────
-// v6.0: Groq (fast cloud) + OpenRouter (large-context cloud) + Ollama (local/free)
-// Gemini and DeepSeek removed: no active keys, cost not justified.
-const PROVIDER_REGISTRY = {
-  groq: {
-    baseURL:  'https://api.groq.com/openai/v1',
-    envKey:   'GROQ_API_KEY',
-    ctxLimit: 128_000,
-    costIn:   0.0,   // free tier
-    costOut:  0.0,
-    models: {
-      'flash-lite': 'llama-3.3-70b-versatile',
-      'flash':      'llama-3.3-70b-versatile',
-      'pro':        'llama-3.3-70b-versatile',
-    },
-    strengths: ['fast', 'free'],
-  },
-  openrouter: {
-    baseURL:  'https://openrouter.ai/api/v1',
-    envKey:   'OPENROUTER_API_KEY',
-    ctxLimit: 1_000_000,
-    costIn:   0.0,   // free-tier models
-    costOut:  0.0,
-    models: {
-      'flash-lite': 'google/gemma-3-27b-it:free',
-      'flash':      'google/gemma-3-27b-it:free',
-      'pro':        'meta-llama/llama-4-maverick:free',
-    },
-    strengths: ['ingest', 'large-context', 'fallback'],
-  },
-  ollama: {
-    // Raw API — no OpenAI compat (fixes empty-response bug with Gemma4)
-    baseURL:  (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(/\/v1\/?$/, ''),
-    envKey:   null,  // local server — no key required
-    ctxLimit: 128_000,
-    costIn:   0.0,
-    costOut:  0.0,
-    models: {
-      'flash-lite': 'gemma4:e4b',
-      'flash':      'gemma4:e4b',
-      'pro':        'gemma4:e4b',
-    },
-    strengths: ['local', 'offline', 'private', 'free'],
-  },
-};
+const OLLAMA_BASE  = (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(/\/v1\/?$/, '');
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4:e4b';
+const GROQ_MODEL   = 'llama-3.3-70b-versatile';
 
-// ── Build active OpenAI clients (cloud providers only) ───────────────────────
-const clients = {};
-const ACTIVE_PROVIDERS = [];
-
-for (const [id, cfg] of Object.entries(PROVIDER_REGISTRY)) {
-  if (cfg.envKey === null) {
-    // Ollama: raw fetch, no OpenAI client. Always registered.
-    ACTIVE_PROVIDERS.push(id);
-    continue;
-  }
-  const apiKey = process.env[cfg.envKey];
-  if (apiKey) {
-    clients[id] = new OpenAI({ apiKey, baseURL: cfg.baseURL, timeout: 60_000 });
-    ACTIVE_PROVIDERS.push(id);
-  }
-}
-
-const cloudProviders = ACTIVE_PROVIDERS.filter(id => PROVIDER_REGISTRY[id].envKey !== null);
-if (cloudProviders.length === 0) {
-  process.stderr.write('[FATAL] No cloud API keys configured. Set at least one of: GROQ_API_KEY, OPENROUTER_API_KEY.\n');
+// ── Groq client (required) ────────────────────────────────────────────────────
+if (!process.env.GROQ_API_KEY) {
+  process.stderr.write('[FATAL] GROQ_API_KEY not set. Export it and restart.\n');
   process.exit(1);
 }
+const groq = new OpenAI({
+  apiKey:  process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
+  timeout: 60_000,
+});
+process.stderr.write(`[INFO] v7.0 — ollama:${OLLAMA_MODEL} + groq:${GROQ_MODEL}\n`);
 
-process.stderr.write(`[INFO] v6.0 active providers: ${ACTIVE_PROVIDERS.join(', ')}\n`);
-
-const server = new Server(
-  { name: "ai-router-mcp", version: "6.0.0" },
-  { capabilities: { tools: {} } }
-);
-
-// ── P0: Secure path validation ───────────────────────────────────────────────
-function validatePath(filePath) {
-  if (!filePath) throw new Error('File path must not be empty.');
-  const resolved = path.resolve(CWD, filePath);
-  const relative = path.relative(CWD, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Access denied: '${filePath}' is outside the working directory.`);
-  }
+// ── Security: path traversal guard ───────────────────────────────────────────
+function validatePath(p) {
+  if (!p) throw new Error('Path must not be empty.');
+  const resolved = path.resolve(CWD, p);
+  const rel = path.relative(CWD, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel))
+    throw new Error(`Access denied: '${p}' is outside the working directory.`);
   return resolved;
 }
 
-// ── P0: SSRF guard ───────────────────────────────────────────────────────────
-function validateUrl(urlString) {
+// ── Security: SSRF guard ──────────────────────────────────────────────────────
+function validateUrl(u) {
   let parsed;
-  try { parsed = new URL(urlString); } catch { throw new Error(`Invalid URL: ${urlString}`); }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error(`Blocked URL scheme '${parsed.protocol}'. Only http/https allowed.`);
-  }
+  try { parsed = new URL(u); } catch { throw new Error(`Invalid URL: ${u}`); }
+  if (!['http:', 'https:'].includes(parsed.protocol))
+    throw new Error(`Blocked scheme '${parsed.protocol}'. Only http/https allowed.`);
   const h = parsed.hostname.toLowerCase();
-  if (
-    h === 'localhost' || h === '0.0.0.0' ||
-    /^127\./.test(h) || /^10\./.test(h) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-    /^192\.168\./.test(h) ||
-    h.endsWith('.local') || h.endsWith('.internal')
-  ) {
+  if (h === 'localhost' || h === '0.0.0.0' ||
+      /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(h) ||
+      h.endsWith('.local') || h.endsWith('.internal'))
     throw new Error(`Blocked private/internal host: ${h}`);
-  }
-  return urlString;
+  return u;
 }
 
-// ── P0: Async read with 50MB size guard ──────────────────────────────────────
-async function readFileGuarded(filePath) {
-  const resolved = validatePath(filePath);
-  const stat = await fs.promises.stat(resolved);
-  if (stat.size > MAX_FILE_SIZE_BYTES) {
-    throw new Error(`File too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB exceeds 50MB limit.`);
-  }
+// ── File reader with size guard ───────────────────────────────────────────────
+async function readFile(p) {
+  const resolved = validatePath(p);
+  const { size } = await fs.promises.stat(resolved);
+  if (size > MAX_FILE_BYTES) throw new Error(`File too large: ${(size/1024/1024).toFixed(1)}MB exceeds 50MB.`);
   return fs.promises.readFile(resolved, 'utf8');
 }
 
-// ── Ollama raw API caller (fixes empty-response bug in OpenAI compat layer) ──
-async function callOllamaRaw(model, prompt) {
-  const base = PROVIDER_REGISTRY.ollama.baseURL;
-  const resp = await fetch(`${base}/api/generate`, {
-    method: 'POST',
+// ── Ollama: raw /api/generate (fixes empty-response bug in compat layer) ─────
+async function callOllama(prompt) {
+  const r = await fetch(`${OLLAMA_BASE}/api/generate`, {
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt, stream: false }),
-    signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
+    body:    JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
+    signal:  AbortSignal.timeout(OLLAMA_TIMEOUT),
   });
-  if (!resp.ok) throw new Error(`Ollama HTTP ${resp.status}: ${await resp.text()}`);
-  const data = await resp.json();
-  return data.response ?? '';
+  if (!r.ok) throw new Error(`Ollama HTTP ${r.status}: ${await r.text()}`);
+  return (await r.json()).response ?? '';
 }
 
-// ── Retryable error detection ─────────────────────────────────────────────────
-function isRetryableError(err) {
-  const msg = (err.message ?? '').toLowerCase();
-  return (
-    err.status === 429 ||
-    msg.includes('quota') ||
-    msg.includes('rate limit') ||
-    msg.includes('rate_limit') ||
-    msg.includes('resource_exhausted') ||
-    msg.includes('too many requests')
-  );
-}
-
-// ── Unified AI caller with provider fallback chain ───────────────────────────
-async function callWithFallback(prompt, modelKey = 'flash-lite', outputFormat = 'text', providerOrder = ACTIVE_PROVIDERS) {
-  const finalPrompt = outputFormat === 'json'
-    ? `${prompt}\n\nCRITICAL: Respond ONLY with valid JSON. No markdown, no explanation, no code blocks.`
+// ── Groq: OpenAI-compatible cloud call ───────────────────────────────────────
+async function callGroq(prompt, jsonMode = false) {
+  const p = jsonMode
+    ? `${prompt}\n\nCRITICAL: Respond ONLY with valid JSON. No markdown, no explanation.`
     : prompt;
-
-  const errors = [];
-
-  for (const id of providerOrder) {
-    const cfg = PROVIDER_REGISTRY[id];
-    if (!cfg) continue;
-
-    // Ollama: use raw fetch API instead of OpenAI client
-    if (id === 'ollama') {
-      try {
-        const modelName = cfg.models[modelKey] ?? cfg.models['flash-lite'];
-        const text = await callOllamaRaw(modelName, finalPrompt);
-        return { text, inTok: 0, outTok: 0, cost: 0, provider: 'ollama', model: modelName };
-      } catch (err) {
-        errors.push(`[ollama] ${err.message}`);
-        process.stderr.write(`[WARN] Ollama unavailable: ${err.message}\n`);
-        continue;
-      }
-    }
-
-    // Cloud providers via OpenAI-compatible SDK
-    if (!clients[id]) continue;
-    try {
-      const modelName  = cfg.models[modelKey] ?? cfg.models['flash-lite'];
-      const completion = await clients[id].chat.completions.create({
-        model:    modelName,
-        messages: [{ role: 'user', content: finalPrompt }],
-      });
-
-      const text   = completion.choices[0].message.content ?? '';
-      const usage  = completion.usage ?? {};
-      const inTok  = usage.prompt_tokens     ?? 0;
-      const outTok = usage.completion_tokens ?? 0;
-      const cost   = ((inTok * cfg.costIn) + (outTok * cfg.costOut)) / 1_000_000;
-
-      return { text, inTok, outTok, cost, provider: id, model: modelName };
-    } catch (err) {
-      errors.push(`[${id}] ${err.message}`);
-      if (isRetryableError(err)) {
-        process.stderr.write(`[WARN] Provider '${id}' quota/rate-limit. Trying next...\n`);
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw new Error(`All providers exhausted:\n${errors.join('\n')}`);
-}
-
-// ── Smart provider routing by task type ──────────────────────────────────────
-function routeProviders(taskType = 'auto') {
-  const ROUTING = {
-    ingest: ['openrouter', 'groq', 'ollama'],   // large context first
-    fast:   ['groq', 'openrouter', 'ollama'],    // lowest latency first
-    cheap:  ['ollama', 'groq', 'openrouter'],    // free local first
-    reason: ['openrouter', 'groq', 'ollama'],    // best reasoning models
-    local:  ['ollama'],                          // local ONLY — no cloud fallback
-    auto:   ACTIVE_PROVIDERS,
+  const c = await groq.chat.completions.create({
+    model:    GROQ_MODEL,
+    messages: [{ role: 'user', content: p }],
+  });
+  const usage = c.usage ?? {};
+  return {
+    text:     c.choices[0].message.content ?? '',
+    inTok:    usage.prompt_tokens     ?? 0,
+    outTok:   usage.completion_tokens ?? 0,
+    provider: 'groq',
   };
-  const preferred = ROUTING[taskType] ?? ACTIVE_PROVIDERS;
-  return preferred.filter(id => ACTIVE_PROVIDERS.includes(id));
 }
 
-// ── Write result to file or return inline ────────────────────────────────────
-async function writeOutput(text, outputFile, meta, context) {
-  const { inTok = 0, outTok = 0, cost = 0, provider = '?', model = '?' } = meta ?? {};
-  const costStr = cost > 0 ? ` [cost: $${cost.toFixed(6)}]` : '';
-  const info    = ` [${provider}/${model}][in:${inTok} out:${outTok}${costStr}]`;
-
-  if (outputFile) {
-    const outPath = validatePath(outputFile);
-    await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
-    await fs.promises.writeFile(outPath, text, 'utf8');
-    return { content: [{ type: "text", text: `SUCCESS: ${context} Saved to ${outputFile}.${info}` }] };
+// ── Smart pipeline: Ollama first, escalate to Groq if needed ─────────────────
+async function callSmart(prompt, jsonMode = false) {
+  try {
+    const text = await callOllama(prompt);
+    if (text && text.length >= LOCAL_MIN_LEN)
+      return { text, inTok: 0, outTok: 0, provider: 'ollama' };
+    process.stderr.write(`[INFO] Local result short (${text?.length ?? 0} chars), escalating to Groq.\n`);
+  } catch (e) {
+    process.stderr.write(`[WARN] Ollama unavailable: ${e.message}. Escalating to Groq.\n`);
   }
-  return { content: [{ type: "text", text: text + info }] };
+  return callGroq(prompt, jsonMode);
 }
 
-// ── Tool definitions ─────────────────────────────────────────────────────────
+// ── Output: write to file or return inline ────────────────────────────────────
+async function writeOutput(text, outputFile, meta, ctx) {
+  const info = ` [${meta.provider}][in:${meta.inTok} out:${meta.outTok}]`;
+  if (outputFile) {
+    const resolved = validatePath(outputFile);
+    await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
+    await fs.promises.writeFile(resolved, text, 'utf8');
+    return { content: [{ type: 'text', text: `SUCCESS: ${ctx} Saved to ${outputFile}.${info}` }] };
+  }
+  return { content: [{ type: 'text', text: text + info }] };
+}
+
+// ── MCP Server ────────────────────────────────────────────────────────────────
+const server = new Server(
+  { name: 'ai-router-mcp', version: '7.0.0' },
+  { capabilities: { tools: {} } }
+);
+
+// ── Tool Definitions ──────────────────────────────────────────────────────────
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "ask_ai",
-      description: "AIRGAP INGESTION TOOL. USE THIS for general AI tasks: summarizing files, answering questions about code, extracting data, analyzing content. Routes to best available provider (Groq → OpenRouter → Ollama). Claude NEVER reads file content — only passes the PATH. Node.js reads disk locally, AI processes in its context window. USE task_type to optimize routing: 'ingest' for large files, 'fast' for speed, 'cheap' for cost/local.",
+      description: "AIRGAP: Claude passes file PATH, Node reads disk, AI processes content. General AI tasks: summarize, extract, analyze. Uses smart pipeline (Ollama free → Groq cloud). task_type='local' forces Ollama only.",
       inputSchema: {
         type: "object",
         properties: {
-          instruction:   { type: "string", description: "What the AI should do (e.g. 'Extract all ERROR entries')." },
-          input_file:    { type: "string", description: "OPTIONAL. File path to read (e.g. logs/app.log). Pass the PATH, never the content." },
-          output_file:   { type: "string", description: "OPTIONAL. Path to save the result (e.g. docs/analysis.md)." },
-          model:         { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Model tier. Default: flash-lite (fastest, cheapest)." },
-          output_format: { type: "string", enum: ["text", "json"], description: "OPTIONAL. Force structured JSON output. Default: text." },
-          task_type:     { type: "string", enum: ["auto", "ingest", "fast", "cheap", "reason"], description: "OPTIONAL. Routing hint. 'ingest'=large files→OpenRouter first, 'fast'=speed→Groq first, 'cheap'=free→Ollama first, 'reason'=logic→OpenRouter. Default: auto." },
+          instruction:   { type: "string", description: "What the AI should do." },
+          input_file:    { type: "string", description: "OPTIONAL. File path to read." },
+          output_file:   { type: "string", description: "OPTIONAL. Path to save result." },
+          output_format: { type: "string", enum: ["text", "json"], description: "OPTIONAL. Default: text." },
+          task_type:     { type: "string", enum: ["auto", "local", "cloud"], description: "OPTIONAL. 'local'=Ollama only, 'cloud'=Groq only, 'auto'=smart pipeline. Default: auto." },
         },
-        required: ["instruction"]
-      }
+        required: ["instruction"],
+      },
     },
     {
       name: "ask_local",
-      description: "LOCAL-ONLY AI INFERENCE via Ollama/Gemma4. USE THIS when: data is sensitive and must not leave the machine, user requests offline processing, or maximum token savings are needed (0 cloud tokens). Does NOT fall back to cloud. If Ollama is unreachable, returns an error. Reads files via Node.js per AIRGAP protocol.",
+      description: "LOCAL-ONLY via Ollama/Gemma4. 0 cloud tokens. Use for sensitive data or offline processing. No cloud fallback.",
       inputSchema: {
         type: "object",
         properties: {
           instruction: { type: "string", description: "What the local AI should do." },
-          input_file:  { type: "string", description: "OPTIONAL. File path to read locally." },
+          input_file:  { type: "string", description: "OPTIONAL. File path to read." },
           output_file: { type: "string", description: "OPTIONAL. Save result to this path." },
-          model:       { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Maps to gemma4:e4b. Default: flash-lite." },
         },
-        required: ["instruction"]
-      }
+        required: ["instruction"],
+      },
     },
     {
       name: "ask_smart",
-      description: "LOCAL-FIRST SMART PIPELINE. USE THIS when cost efficiency is the priority. Tries Gemma4 locally first (free, ~560ms). If local output is sufficient, returns immediately with 0 cloud tokens used. If local result is too short or Ollama fails, escalates automatically to Groq/OpenRouter. Best for: medium-complexity tasks where local might be enough.",
+      description: "LOCAL-FIRST PIPELINE. Tries Gemma4 (free) first. If sufficient, returns with 0 cloud tokens. Auto-escalates to Groq only when needed. Best for cost efficiency.",
       inputSchema: {
         type: "object",
         properties: {
           instruction: { type: "string", description: "What the AI should do." },
           input_file:  { type: "string", description: "OPTIONAL. File path to read." },
           output_file: { type: "string", description: "OPTIONAL. Save result to this path." },
-          model:       { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Default: flash-lite." },
         },
-        required: ["instruction"]
-      }
+        required: ["instruction"],
+      },
     },
     {
       name: "ask_url",
-      description: "AIRGAP URL INGESTION. USE THIS when processing a URL's content. Fetches the URL locally (Node.js) and delegates processing to AI. Claude never sees the raw HTML or response body. Best for: reading docs pages, API references, JSON endpoints.",
+      description: "AIRGAP URL INGESTION. Fetches URL locally, sends content to AI. Claude never sees raw HTML. Use for docs, API refs, JSON endpoints.",
       inputSchema: {
         type: "object",
         properties: {
-          url:           { type: "string", description: "URL to fetch and process (e.g. https://example.com/data)." },
-          instruction:   { type: "string", description: "What the AI should do with the fetched content." },
-          output_file:   { type: "string", description: "OPTIONAL. Path to save the result." },
-          model:         { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Default: flash-lite." },
+          url:           { type: "string", description: "URL to fetch." },
+          instruction:   { type: "string", description: "What the AI should do with the content." },
+          output_file:   { type: "string", description: "OPTIONAL. Save result to this path." },
           output_format: { type: "string", enum: ["text", "json"], description: "OPTIONAL. Default: text." },
         },
-        required: ["url", "instruction"]
-      }
+        required: ["url", "instruction"],
+      },
     },
     {
       name: "ask_batch",
-      description: "AIRGAP BATCH INGESTION. USE THIS when processing multiple files together with the same instruction. Ideal for: summarizing weekly logs, multi-module audits, cross-file analysis. All files read by Node.js in parallel — Claude never sees content.",
+      description: "AIRGAP BATCH: process multiple files with one instruction. All reads are local. Claude never sees content. Max 20 files.",
       inputSchema: {
         type: "object",
         properties: {
           instruction:   { type: "string", description: "What the AI should do with all files." },
-          input_files:   { type: "array", items: { type: "string" }, description: "Array of file paths to process together." },
-          output_file:   { type: "string", description: "OPTIONAL. Path to save the combined result." },
-          model:         { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Default: flash-lite." },
+          input_files:   { type: "array", items: { type: "string" }, description: "Array of file paths." },
+          output_file:   { type: "string", description: "OPTIONAL. Save combined result." },
           output_format: { type: "string", enum: ["text", "json"], description: "OPTIONAL. Default: text." },
-          task_type:     { type: "string", enum: ["auto", "ingest", "fast", "cheap", "reason"], description: "OPTIONAL. Routing hint. Default: auto." },
         },
-        required: ["instruction", "input_files"]
-      }
+        required: ["instruction", "input_files"],
+      },
     },
     {
       name: "ask_diff",
-      description: "AIRGAP DIFF ANALYSIS. USE THIS automatically when: a git diff file or patch is >100 lines, user asks to review changes, or input file ends in .diff or .patch. Reads the diff via Node.js, sends to AI. Returns: files changed, risk level per file, breaking change detection. Claude NEVER loads diff content.",
+      description: "AIRGAP DIFF ANALYSIS. Reads diff/patch file via Node.js, sends to Groq. Returns per-file risk assessment. Pass 'stdin' to run 'git diff HEAD' automatically.",
       inputSchema: {
         type: "object",
         properties: {
-          diff_file:   { type: "string", description: "Path to .diff or .patch file. Pass 'stdin' to capture 'git diff HEAD' automatically." },
-          instruction: { type: "string", description: "OPTIONAL. Default: summarize changes, identify risks, flag breaking changes." },
+          diff_file:   { type: "string", description: "Path to .diff/.patch file, or 'stdin' for git diff HEAD." },
+          instruction: { type: "string", description: "OPTIONAL. Default: summarize changes, assess risk, flag breaking changes." },
           output_file: { type: "string", description: "OPTIONAL. Save report to this path." },
-          model:       { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Default: flash." },
         },
-        required: ["diff_file"]
-      }
+        required: ["diff_file"],
+      },
     },
     {
       name: "ask_schema",
-      description: "AIRGAP SCHEMA EXTRACTION. USE THIS automatically when: input file ends in .prisma, .sql, .graphql, or is an OpenAPI/Swagger .yaml/.json >2KB. Reads schema via Node.js, sends to AI. Returns ONLY normalized structure: tables/models, fields, types, relations. Raw file never enters Claude's context.",
+      description: "AIRGAP SCHEMA EXTRACTION. Reads .prisma/.sql/.graphql/OpenAPI files via Node.js. Returns normalized JSON structure. Raw file never enters Claude's context.",
       inputSchema: {
         type: "object",
         properties: {
-          input_file:  { type: "string", description: "Path to .prisma, .sql, .graphql, openapi.yaml/json schema file." },
-          instruction: { type: "string", description: "OPTIONAL. Default: extract all models/tables with fields, types, and relations as JSON." },
-          output_file: { type: "string", description: "OPTIONAL. Save extracted schema to this path." },
-          model:       { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Default: flash-lite." },
+          input_file:  { type: "string", description: "Path to schema file (.prisma, .sql, .graphql, .yaml, .json)." },
+          instruction: { type: "string", description: "OPTIONAL. Default: extract all models/tables with fields, types, relations as JSON." },
+          output_file: { type: "string", description: "OPTIONAL. Save extracted schema." },
         },
-        required: ["input_file"]
-      }
+        required: ["input_file"],
+      },
     },
     {
       name: "ask_compress",
-      description: "TWO-STAGE CONTEXT COMPACTION. USE THIS automatically when: user types /compact, conversation references growing context, or a log/history file >50KB needs summarizing. Stage 1: Gemma4 (local, free) compresses the file. Stage 2: Groq finalizes the summary. Minimizes cloud tokens. Returns a dense summary preserving key facts, decisions, file paths, and tool results.",
+      description: "TWO-STAGE COMPACTION. Stage 1: Gemma4 local pre-compression (free). Stage 2: Groq finalizes. Use when /compact needed or large history/log file >50KB. Minimizes cloud tokens.",
       inputSchema: {
         type: "object",
         properties: {
-          input_file:  { type: "string", description: "Path to conversation history, log, or any large text file to compact." },
-          focus:       { type: "string", description: "OPTIONAL. Extra focus instructions (e.g. 'preserve all file paths and error messages')." },
-          output_file: { type: "string", description: "OPTIONAL. Save compact summary to this path." },
-          model:       { type: "string", enum: ["flash-lite", "flash", "pro"], description: "OPTIONAL. Default: flash-lite." },
+          input_file:  { type: "string", description: "Large text file to compact (conversation history, logs, etc.)." },
+          focus:       { type: "string", description: "OPTIONAL. Extra focus (e.g. 'preserve all file paths and errors')." },
+          output_file: { type: "string", description: "OPTIONAL. Save compact summary." },
         },
-        required: ["input_file"]
-      }
+        required: ["input_file"],
+      },
     },
-  ]
+  ],
 }));
 
-// ── Tool handlers ─────────────────────────────────────────────────────────────
+// ── Tool Handlers ─────────────────────────────────────────────────────────────
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    // --- Tool: ask_ai ---
-    if (name === "ask_ai") {
-      const { instruction, input_file, output_file, model = 'flash-lite', output_format = 'text', task_type = 'auto' } = args;
+    // ── ask_ai ────────────────────────────────────────────────────────────────
+    if (name === 'ask_ai') {
+      const { instruction, input_file, output_file, output_format = 'text', task_type = 'auto' } = args;
       let prompt = instruction;
       if (input_file) {
-        const content = await readFileGuarded(input_file);
+        const content = await readFile(input_file);
         prompt = `${instruction}\n\n--- FILE: ${input_file} ---\n${content}`;
       }
-      const order = routeProviders(task_type);
-      const meta  = await callWithFallback(prompt, model, output_format, order);
-      return writeOutput(meta.text, output_file, meta, `AI processed '${input_file ?? 'instruction'}'.`);
+      const jsonMode = output_format === 'json';
+      let meta;
+      if      (task_type === 'local') meta = { text: await callOllama(prompt), inTok: 0, outTok: 0, provider: 'ollama' };
+      else if (task_type === 'cloud') meta = await callGroq(prompt, jsonMode);
+      else                            meta = await callSmart(prompt, jsonMode);
+      return writeOutput(meta.text, output_file, meta, `Processed '${input_file ?? 'prompt'}'.`);
     }
 
-    // --- Tool: ask_local ---
-    if (name === "ask_local") {
-      const { instruction, input_file, output_file, model = 'flash-lite' } = args;
+    // ── ask_local ─────────────────────────────────────────────────────────────
+    if (name === 'ask_local') {
+      const { instruction, input_file, output_file } = args;
       let prompt = instruction;
       if (input_file) {
-        const content = await readFileGuarded(input_file);
+        const content = await readFile(input_file);
         prompt = `${instruction}\n\n--- FILE: ${input_file} ---\n${content}`;
       }
-      const cfg       = PROVIDER_REGISTRY.ollama;
-      const modelName = cfg.models[model] ?? cfg.models['flash-lite'];
-      const text      = await callOllamaRaw(modelName, prompt);
-      const meta      = { text, inTok: 0, outTok: 0, cost: 0, provider: 'ollama', model: modelName };
-      return writeOutput(meta.text, output_file, meta, `Local AI processed '${input_file ?? 'instruction'}'.`);
+      const text = await callOllama(prompt);
+      return writeOutput(text, output_file, { inTok: 0, outTok: 0, provider: 'ollama' }, `Local processed '${input_file ?? 'prompt'}'.`);
     }
 
-    // --- Tool: ask_smart (local-first pipeline) ---
-    if (name === "ask_smart") {
-      const { instruction, input_file, output_file, model = 'flash-lite' } = args;
+    // ── ask_smart ─────────────────────────────────────────────────────────────
+    if (name === 'ask_smart') {
+      const { instruction, input_file, output_file } = args;
       let prompt = instruction;
       if (input_file) {
-        const content = await readFileGuarded(input_file);
+        const content = await readFile(input_file);
         prompt = `${instruction}\n\n--- FILE: ${input_file} ---\n${content}`;
       }
-
-      // Stage 1: Try Gemma4 locally (0 cloud tokens)
-      try {
-        const cfg       = PROVIDER_REGISTRY.ollama;
-        const modelName = cfg.models[model] ?? cfg.models['flash-lite'];
-        const localText = await callOllamaRaw(modelName, prompt);
-        if (localText && localText.length >= LOCAL_MIN_LENGTH) {
-          const meta = { text: localText, inTok: 0, outTok: 0, cost: 0, provider: 'ollama', model: modelName };
-          return writeOutput(meta.text, output_file, meta, `Local AI handled '${input_file ?? 'instruction'}' (0 cloud tokens).`);
-        }
-        process.stderr.write(`[INFO] ask_smart: local result too short (${localText?.length ?? 0} chars), escalating...\n`);
-      } catch (e) {
-        process.stderr.write(`[WARN] ask_smart: Ollama unavailable (${e.message}), escalating to cloud...\n`);
-      }
-
-      // Stage 2: Escalate to cloud
-      const order = routeProviders('fast');
-      const meta  = await callWithFallback(prompt, model, 'text', order);
-      return writeOutput(meta.text, output_file, meta, `Cloud AI handled '${input_file ?? 'instruction'}' (local escalated).`);
+      const meta = await callSmart(prompt);
+      return writeOutput(meta.text, output_file, meta, `Smart processed '${input_file ?? 'prompt'}'.`);
     }
 
-    // --- Tool: ask_url ---
-    if (name === "ask_url") {
-      const { url, instruction, output_file, model = 'flash-lite', output_format = 'text' } = args;
+    // ── ask_url ───────────────────────────────────────────────────────────────
+    if (name === 'ask_url') {
+      const { url, instruction, output_file, output_format = 'text' } = args;
       validateUrl(url);
-
       const controller = new AbortController();
-      const timeoutId  = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      const tid = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
       let body;
       try {
-        const response = await fetch(url, { signal: controller.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status} fetching: ${url}`);
-        const contentLength = response.headers.get('content-length');
-        if (contentLength && parseInt(contentLength) > MAX_URL_BODY_BYTES) {
-          throw new Error(`URL response too large: ${(parseInt(contentLength)/1024/1024).toFixed(1)}MB exceeds 10MB limit.`);
-        }
-        body = await response.text();
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      if (Buffer.byteLength(body) > MAX_URL_BODY_BYTES) {
-        throw new Error(`URL response body exceeds 10MB limit.`);
-      }
-
-      const prompt = `${instruction}\n\n--- URL: ${url} ---\n${body}`;
-      const meta   = await callWithFallback(prompt, model, output_format);
-      return writeOutput(meta.text, output_file, meta, `AI processed URL '${url}'.`);
+        const resp = await fetch(url, { signal: controller.signal });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
+        const cl = resp.headers.get('content-length');
+        if (cl && parseInt(cl) > MAX_URL_BYTES) throw new Error(`Response too large: ${(parseInt(cl)/1024/1024).toFixed(1)}MB`);
+        body = await resp.text();
+      } finally { clearTimeout(tid); }
+      if (Buffer.byteLength(body) > MAX_URL_BYTES) throw new Error('Response body exceeds 10MB.');
+      const meta = await callGroq(`${instruction}\n\n--- URL: ${url} ---\n${body}`, output_format === 'json');
+      return writeOutput(meta.text, output_file, meta, `Processed URL '${url}'.`);
     }
 
-    // --- Tool: ask_batch ---
-    if (name === "ask_batch") {
-      const { instruction, input_files, output_file, model = 'flash-lite', output_format = 'text', task_type = 'auto' } = args;
-      if (input_files.length > 20) throw new Error('Batch limit: max 20 files per call.');
+    // ── ask_batch ─────────────────────────────────────────────────────────────
+    if (name === 'ask_batch') {
+      const { instruction, input_files, output_file, output_format = 'text' } = args;
+      if (input_files.length > 20) throw new Error('Batch limit: max 20 files.');
       const results = await Promise.allSettled(
-        input_files.map(async (f) => {
-          const content = await readFileGuarded(f);
-          return `--- FILE: ${f} ---\n${content}`;
-        })
+        input_files.map(async (f) => `--- FILE: ${f} ---\n${await readFile(f)}`)
       );
-      const failed = results.filter(r => r.status === 'rejected');
-      if (failed.length) {
-        process.stderr.write(`[WARN] ask_batch: ${failed.length} file(s) skipped: ${failed.map((r, i) => `${input_files[i]}: ${r.reason.message}`).join('; ')}\n`);
+      const failedIdx = results.reduce((a, r, i) => (r.status === 'rejected' ? a.concat(i) : a), []);
+      if (failedIdx.length) {
+        const msg = failedIdx.map((i) => `${input_files[i]}: ${results[i].reason.message}`).join('; ');
+        process.stderr.write(`[WARN] ask_batch: ${failedIdx.length} file(s) skipped: ${msg}\n`);
       }
-      const sections = results.filter(r => r.status === 'fulfilled').map(r => r.value);
-      if (sections.length === 0) throw new Error('All files failed to read.');
-      const prompt = `${instruction}\n\n${sections.join('\n\n')}`;
-      const order  = routeProviders(task_type);
-      const meta   = await callWithFallback(prompt, model, output_format, order);
-      return writeOutput(meta.text, output_file, meta, `AI processed ${sections.length}/${input_files.length} files.`);
+      const sections = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+      if (!sections.length) throw new Error('All files failed to read.');
+      const meta = await callGroq(`${instruction}\n\n${sections.join('\n\n')}`, output_format === 'json');
+      return writeOutput(meta.text, output_file, meta, `Processed ${sections.length}/${input_files.length} files.`);
     }
 
-    // --- Tool: ask_diff ---
-    if (name === "ask_diff") {
-      const { diff_file, instruction, output_file, model = 'flash' } = args;
+    // ── ask_diff ──────────────────────────────────────────────────────────────
+    if (name === 'ask_diff') {
+      const { diff_file, instruction, output_file } = args;
       let diffContent;
       if (diff_file === 'stdin') {
         const { execFile } = await import('child_process');
-        diffContent = await new Promise((resolve, reject) => {
-          execFile('git', ['diff', 'HEAD'], { encoding: 'utf8', cwd: CWD }, (err, stdout) => {
-            if (err) reject(err); else resolve(stdout);
-          });
-        });
+        diffContent = await new Promise((res, rej) =>
+          execFile('git', ['diff', 'HEAD'], { encoding: 'utf8', cwd: CWD }, (e, out) => e ? rej(e) : res(out))
+        );
       } else {
-        diffContent = await readFileGuarded(diff_file);
+        diffContent = await readFile(diff_file);
       }
-      const inst   = instruction ?? 'Summarize all changes. For each file: list what changed, assess risk (low/medium/high), and flag any breaking changes or security issues.';
-      const prompt = `${inst}\n\n--- DIFF ---\n${diffContent}`;
-      const order  = routeProviders('ingest');
-      const meta   = await callWithFallback(prompt, model, 'text', order);
-      return writeOutput(meta.text, output_file, meta, `Diff analysis complete.`);
+      const inst = instruction ?? 'Summarize all changes. Per file: what changed, risk level (low/medium/high), and any breaking changes or security issues.';
+      const meta = await callGroq(`${inst}\n\n--- DIFF ---\n${diffContent}`);
+      return writeOutput(meta.text, output_file, meta, 'Diff analysis complete.');
     }
 
-    // --- Tool: ask_schema ---
-    if (name === "ask_schema") {
-      const { input_file, instruction, output_file, model = 'flash-lite' } = args;
-      const content = await readFileGuarded(input_file);
-      const inst    = instruction ?? 'Extract all models/tables with their fields, types, constraints, and relations. Return ONLY valid JSON. No explanation.';
-      const prompt  = `${inst}\n\n--- SCHEMA FILE: ${input_file} ---\n${content}`;
-      const order   = routeProviders('ingest');
-      const meta    = await callWithFallback(prompt, model, 'json', order);
+    // ── ask_schema ────────────────────────────────────────────────────────────
+    if (name === 'ask_schema') {
+      const { input_file, instruction, output_file } = args;
+      const content = await readFile(input_file);
+      const inst = instruction ?? 'Extract all models/tables with fields, types, constraints, and relations. Return ONLY valid JSON.';
+      const meta = await callGroq(`${inst}\n\n--- SCHEMA: ${input_file} ---\n${content}`, true);
       return writeOutput(meta.text, output_file, meta, `Schema extracted from '${input_file}'.`);
     }
 
-    // --- Tool: ask_compress (two-stage: Gemma4 local → Groq) ---
-    if (name === "ask_compress") {
-      const { input_file, focus, output_file, model = 'flash-lite' } = args;
-      const content  = await readFileGuarded(input_file);
-      const focusTip = focus ? `\nFocus especially on: ${focus}` : '';
+    // ── ask_compress ──────────────────────────────────────────────────────────
+    if (name === 'ask_compress') {
+      const { input_file, focus, output_file } = args;
+      const content   = await readFile(input_file);
+      const focusTip  = focus ? `\nFocus especially on: ${focus}` : '';
 
-      // Stage 1: Gemma4 local pre-compression (free)
-      let compressedContent = content;
+      // Stage 1: Gemma4 local pre-compression (0 cloud tokens)
+      let compressed = content;
       try {
-        const localModel   = PROVIDER_REGISTRY.ollama.models['flash-lite'];
-        const compressPrompt = `Compress the following content to a dense summary. Preserve all key facts, decisions, file paths, error messages, and data. Output ONLY the summary, no preamble.${focusTip}\n\n${content}`;
-        const compressed = await callOllamaRaw(localModel, compressPrompt);
-        if (compressed && compressed.length > 50 && compressed.length < content.length) {
-          process.stderr.write(`[INFO] ask_compress: Gemma4 compressed ${content.length} → ${compressed.length} chars\n`);
-          compressedContent = compressed;
+        const c = await callOllama(
+          `Compress to a dense summary. Preserve key facts, decisions, file paths, errors, tool results. Output ONLY the summary.${focusTip}\n\n${content}`
+        );
+        if (c && c.length > 50 && c.length < content.length) {
+          process.stderr.write(`[INFO] ask_compress: ${content.length} → ${c.length} chars (Gemma4)\n`);
+          compressed = c;
         }
       } catch (e) {
-        process.stderr.write(`[WARN] ask_compress: local stage skipped (${e.message}), using original\n`);
+        process.stderr.write(`[WARN] ask_compress: local stage skipped (${e.message})\n`);
       }
 
-      // Stage 2: Cloud finalization (use 'fast' to skip Ollama if Stage 1 already failed)
-      const prompt = `Summarize the following content concisely. Preserve all key decisions, file paths, error messages, tool results, and facts needed to continue work.${focusTip}\n\n--- CONTENT ---\n${compressedContent}`;
-      const order  = routeProviders('fast');
-      const meta   = await callWithFallback(prompt, model, 'text', order);
+      // Stage 2: Groq finalization
+      const meta = await callGroq(
+        `Summarize concisely. Preserve all decisions, file paths, errors, tool results, and facts needed to continue work.${focusTip}\n\n--- CONTENT ---\n${compressed}`
+      );
       return writeOutput(meta.text, output_file, meta, `Compacted '${input_file}'.`);
     }
 
-    throw new Error(`Tool not found: ${name}`);
+    throw new Error(`Unknown tool: ${name}`);
 
-  } catch (error) {
-    return { content: [{ type: "text", text: `Error: ${error.message}` }] };
+  } catch (err) {
+    return { content: [{ type: 'text', text: `Error: ${err.message}` }] };
   }
 });
 
