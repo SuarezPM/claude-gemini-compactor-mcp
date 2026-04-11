@@ -17,7 +17,7 @@
 ---
 
 > **A perfect closed circuit. Your Anthropic token quota, untouched.**
-> **v6.0: Local-First AI Router — Gemma4/Ollama (local) · Groq · OpenRouter. 8 tools. ask_smart runs 0 cloud tokens when possible.**
+> **v6.0: Local-First AI Router — Gemma4/Ollama (local) · Groq · OpenRouter. 8 tools. ask\_smart runs 0 cloud tokens when possible.**
 
 ---
 
@@ -238,7 +238,7 @@ Same as `ask_ai` but tries Gemma4/Ollama first (0 cloud tokens). Escalates to cl
 | `output_format` | ❌ | enum | `text` · `json` (default: `text`) |
 | `task_type` | ❌ | enum | `ingest` · `fast` · `cheap` · `reason` · `local` · `auto` (default: `auto`) |
 
-### `ask_gemini_url` — URL ingestion
+### `ask_url` — URL ingestion
 
 Fetches a URL locally via Node.js. Claude never sees the raw HTML or response body.
 
@@ -250,7 +250,7 @@ Fetches a URL locally via Node.js. Claude never sees the raw HTML or response bo
 | `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
-### `ask_gemini_batch` — Parallel multi-file ingestion
+### `ask_batch` — Parallel multi-file ingestion
 
 Reads all files simultaneously via `Promise.all()` and sends them in a single call.
 
@@ -263,7 +263,7 @@ Reads all files simultaneously via `Promise.all()` and sends them in a single ca
 | `output_format` | ❌ | enum | Default: `text` |
 | `task_type` | ❌ | enum | Default: `auto` |
 
-### `ask_gemini_diff` — Diff / patch analysis
+### `ask_diff` — Diff / patch analysis
 
 Auto-triggered when working with `.diff` or `.patch` files >100 lines, or when asked to review a git diff.
 
@@ -275,7 +275,7 @@ Auto-triggered when working with `.diff` or `.patch` files >100 lines, or when a
 | `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
-### `ask_gemini_schema` — Schema / data model analysis
+### `ask_schema` — Schema / data model analysis
 
 Auto-triggered on `.prisma`, `.sql`, `.graphql`, or OpenAPI/Swagger files.
 
@@ -287,7 +287,7 @@ Auto-triggered on `.prisma`, `.sql`, `.graphql`, or OpenAPI/Swagger files.
 | `model` | ❌ | enum | Default: `flash-lite` |
 | `output_format` | ❌ | enum | Default: `text` |
 
-### `ask_gemini_compact` — Context compaction
+### `ask_compress` — Context compaction
 
 Auto-triggered on `/compact` requests or when a file exceeds 50KB. Summarizes content to reduce context load.
 
@@ -298,7 +298,7 @@ Auto-triggered on `/compact` requests or when a file exceeds 50KB. Summarizes co
 | `output_file` | ❌ | string | Path to save the compacted result |
 | `model` | ❌ | enum | Default: `flash-lite` |
 
-### `ask_ollama` — Local / offline inference
+### `ask_local` — Local / offline inference
 
 Auto-triggered for offline, private, or local-only requests. Requires Ollama running at `OLLAMA_BASE_URL` (default: `http://localhost:11434/v1`).
 
@@ -340,7 +340,7 @@ The server enforces four hard guarantees on every operation:
 
 **2. 50MB file size cap** — files exceeding 50MB are rejected before being read into memory, preventing OOM crashes on unexpectedly large inputs.
 
-**3. SSRF guard** — `ask_gemini_url` blocks `file://`, private IPs (10.x, 172.16–31.x, 192.168.x), localhost, and `.local`/`.internal` hostnames.
+**3. SSRF guard** — `ask_url` blocks `file://`, private IPs (10.x, 172.16–31.x, 192.168.x), localhost, and `.local`/`.internal` hostnames.
 
 **4. Fail-fast provider validation** — the server exits at startup with `[FATAL] No API keys configured` if no keys are present. No silent runtime failures mid-task.
 
@@ -379,7 +379,7 @@ The server enforces four hard guarantees on every operation:
 **Tool does not appear in Claude after config change**
 → Restart Claude completely. MCP servers are loaded at startup, not hot-reloaded.
 
-**`HTTP 403 fetching: https://...`**** on ask\_gemini\_url**
+**`HTTP 403 fetching: https://...`**** on ask\_url**
 → The target server is blocking automated requests. Check if authentication is required.
 
 ---
@@ -391,7 +391,7 @@ The server enforces four hard guarantees on every operation:
 3. Commit following [Conventional Commits](https://www.conventionalcommits.org/)
 4. Open a Pull Request against `master`
 
-New tools should follow the `ask_gemini_*` naming pattern and use the shared `callWithFallback()` and `writeOutput()` helpers. Keep `server.js` focused on the AIRGAP Protocol — no bloat.
+New tools should follow the `ask_*` naming pattern and use the shared `callWithFallback()` and `writeOutput()` helpers. Keep `server.js` focused on the AIRGAP Protocol — no bloat.
 
 ---
 

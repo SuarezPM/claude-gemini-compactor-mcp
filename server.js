@@ -38,9 +38,9 @@ const PROVIDER_REGISTRY = {
     costIn:   0.0,   // free-tier models
     costOut:  0.0,
     models: {
-      'flash-lite': 'openrouter/free',
-      'flash':      'openrouter/free',
-      'pro':        'nvidia/nemotron-3-super-120b-a12b:free',
+      'flash-lite': 'google/gemma-3-27b-it:free',
+      'flash':      'google/gemma-3-27b-it:free',
+      'pro':        'meta-llama/llama-4-maverick:free',
     },
     strengths: ['ingest', 'large-context', 'fallback'],
   },
@@ -72,7 +72,7 @@ for (const [id, cfg] of Object.entries(PROVIDER_REGISTRY)) {
   }
   const apiKey = process.env[cfg.envKey];
   if (apiKey) {
-    clients[id] = new OpenAI({ apiKey, baseURL: cfg.baseURL });
+    clients[id] = new OpenAI({ apiKey, baseURL: cfg.baseURL, timeout: 60_000 });
     ACTIVE_PROVIDERS.push(id);
   }
 }
@@ -457,16 +457,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // --- Tool: ask_batch ---
     if (name === "ask_batch") {
       const { instruction, input_files, output_file, model = 'flash-lite', output_format = 'text', task_type = 'auto' } = args;
-      const sections = await Promise.all(
+      if (input_files.length > 20) throw new Error('Batch limit: max 20 files per call.');
+      const results = await Promise.allSettled(
         input_files.map(async (f) => {
           const content = await readFileGuarded(f);
           return `--- FILE: ${f} ---\n${content}`;
         })
       );
+      const failed = results.filter(r => r.status === 'rejected');
+      if (failed.length) {
+        process.stderr.write(`[WARN] ask_batch: ${failed.length} file(s) skipped: ${failed.map((r, i) => `${input_files[i]}: ${r.reason.message}`).join('; ')}\n`);
+      }
+      const sections = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+      if (sections.length === 0) throw new Error('All files failed to read.');
       const prompt = `${instruction}\n\n${sections.join('\n\n')}`;
       const order  = routeProviders(task_type);
       const meta   = await callWithFallback(prompt, model, output_format, order);
-      return writeOutput(meta.text, output_file, meta, `AI processed ${input_files.length} files.`);
+      return writeOutput(meta.text, output_file, meta, `AI processed ${sections.length}/${input_files.length} files.`);
     }
 
     // --- Tool: ask_diff ---
@@ -474,8 +481,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { diff_file, instruction, output_file, model = 'flash' } = args;
       let diffContent;
       if (diff_file === 'stdin') {
-        const { execSync } = await import('child_process');
-        diffContent = execSync('git diff HEAD', { encoding: 'utf8', cwd: CWD });
+        const { execFile } = await import('child_process');
+        diffContent = await new Promise((resolve, reject) => {
+          execFile('git', ['diff', 'HEAD'], { encoding: 'utf8', cwd: CWD }, (err, stdout) => {
+            if (err) reject(err); else resolve(stdout);
+          });
+        });
       } else {
         diffContent = await readFileGuarded(diff_file);
       }
@@ -517,9 +528,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         process.stderr.write(`[WARN] ask_compress: local stage skipped (${e.message}), using original\n`);
       }
 
-      // Stage 2: Cloud finalization
+      // Stage 2: Cloud finalization (use 'fast' to skip Ollama if Stage 1 already failed)
       const prompt = `Summarize the following content concisely. Preserve all key decisions, file paths, error messages, tool results, and facts needed to continue work.${focusTip}\n\n--- CONTENT ---\n${compressedContent}`;
-      const order  = routeProviders('cheap');
+      const order  = routeProviders('fast');
       const meta   = await callWithFallback(prompt, model, 'text', order);
       return writeOutput(meta.text, output_file, meta, `Compacted '${input_file}'.`);
     }
